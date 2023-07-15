@@ -1,0 +1,43 @@
+// For format details, see https://aka.ms/devcontainer.json. For config options, see the
+// README at: https://github.com/devcontainers/templates/tree/main/src/typescript-node
+{
+	"name": "Node.js & TypeScript",
+	// Or use a Dockerfile or Docker Compose file. More info: https://containers.dev/guide/dockerfile
+	"image": "mcr.microsoft.com/devcontainers/typescript-node:1-20-bullseye",
+	"features": {
+		"ghcr.io/devcontainers/features/docker-outside-of-docker:1": {},
+		"ghcr.io/dhoeric/features/google-cloud-cli:1": {}
+	},
+
+    "mounts": [
+        // These folder's content is generated and doesn't need to be exposed back to the host via the `workspace` bind mount. Keep in volume for performance reasons (Windows Docker) 
+        // and to preserve content so these doesn't have to be filled every single time dev-container is re-generated
+        "source=ps-${localWorkspaceFolderBasename}-node_modules,target=/workspaces/${localWorkspaceFolderBasename}/node_modules,type=volume",
+        "source=ps-${localWorkspaceFolderBasename}-dist,target=/workspaces/${localWorkspaceFolderBasename}/dist,type=volume",
+    ],
+
+	// Use 'forwardPorts' to make a list of ports inside the container available locally.
+	// "forwardPorts": [],
+
+	// Use 'postCreateCommand' to run commands after the container is created.
+	"postCreateCommand": "./.devcontainer/postCreateCommand.sh",
+	
+	"customizations": {
+		"vscode": {
+			"extensions": [
+				"streetsidesoftware.code-spell-checker",
+				"IronGeek.vscode-env",
+				"rangav.vscode-thunder-client"
+			]
+		}
+	},
+
+	// Configure tool-specific properties.
+	// "customizations": {},
+
+	"remoteEnv": {
+	},
+
+	// Uncomment to connect as root instead. More info: https://aka.ms/dev-containers-non-root.
+	"remoteUser": "root"
+}

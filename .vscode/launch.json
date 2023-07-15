@@ -1,0 +1,44 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "node",
+            "request": "launch",
+            "name": "ParseDef Fix Generation",
+            "program": "${workspaceFolder}/src/parsedef-fix.ts",
+            "env": {
+                "NODE_ENV": "development",
+                "LLM_TRACE": "true"
+            },
+            "args": [],
+            "preLaunchTask": "build",
+            "outFiles": [
+                "${workspaceFolder}/dist/**/*.js"
+            ],
+            "runtimeArgs": [
+                "--experimental-modules"
+            ]
+        },
+        {
+            "type": "node",
+            "request": "launch",
+            "name": "incrementalSelectorGenerator",
+            "program": "${workspaceFolder}/src/parsedef-fix2.ts",
+            "env": {
+                "NODE_ENV": "development",
+                "ANOMALIES_DATE": "07/12/2023"
+            },
+            "args": [],
+            "preLaunchTask": "build",
+            "outFiles": [
+                "${workspaceFolder}/dist/**/*.js"
+            ],
+            "runtimeArgs": [
+                "--experimental-modules"
+            ]
+        }        
+    ]
+}
