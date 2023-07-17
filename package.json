@@ -8,11 +8,12 @@
     "engines": {
         "node": ">=16.0.0"
     },
-    "main": "dist/cjs/index.js",
-    "module": "dist/esm/index.js",
+    "main": "dist/esm/src/selector-loom.js",
+    "module": "dist/esm/src/selector-loom.js",
+    "types": "dist/esm/src/selector-loom.d.ts",
+    "files": ["dist/"],
     "scripts": {
-        // "build": "node --loader ts-node/esm util/build.ts && tsc --build tsconfig.json"
-        "build": "rm -rf dist/ && prettier --write src/ && npm run build:esm && npm run build:cjs",
+        "build": "rm -rf dist/* && npm run build:esm && npm run build:cjs",
         "build:esm": "tsc",
         "build:cjs": "tsc --module CommonJS --outDir dist/cjs"
     },
@@ -31,6 +32,7 @@
         "fs-extra": "^11.1.1",
         "jsdom": "^22.1.0",
         "ts-node": "^10.9.1",
+        "tsup": "^7.1.0",
         "typescript": "^5.1.6"
     }
 }

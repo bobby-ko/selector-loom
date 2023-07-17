@@ -2,7 +2,7 @@ import bs from "binary-search";
 import _, { CollectionChain } from 'lodash';
 const { chain, cloneDeep, last, orderBy } = _;
 
-import { IElementMarker, IElementVolume, ISelector, IWeighted, MarkerType } from "./models.js";
+import { IElementMarker, IElementVolume, IInternalSelector, ISelector, IWeighted, MarkerType } from "./models.js";
 import { ISelectorLoomOptions, IExclusionFilter } from "./selector-loom-options.js";
 
 const excludedAttributes = orderBy([
@@ -95,7 +95,7 @@ function $markers(element: HTMLElement, classDistribution: Record<string, number
         .filter(marker => marker.weight > 0);
 }
 
-function topMarker(element: HTMLElement, classDistribution: Record<string, number>, attributeDistribution: Record<string, number>, tagDistribution: Record<string, number>, usedMarkers?: IWeighted[], 
+function topMarker(element: HTMLElement, classDistribution: Record<string, number>, attributeDistribution: Record<string, number>, tagDistribution: Record<string, number>, usedMarkers?: IWeighted[],
     excludedMarkers?: IElementMarker[], userExclusions?: IExclusionFilter[]): IWeighted {
 
     return $markers(element, classDistribution, attributeDistribution, tagDistribution)
@@ -111,7 +111,7 @@ function topMarker(element: HTMLElement, classDistribution: Record<string, numbe
                 && excludedMarker.type === marker.type
                 && excludedMarker.item === marker.item) !== true
 
-            && userExclusions?.some(userExclusion => 
+            && userExclusions?.some(userExclusion =>
                 (!userExclusion.elements || userExclusion.elements === element)
                 && (!userExclusion.type || userExclusion.type === marker.type)
                 && ((userExclusion.value instanceof String && userExclusion.value === marker.item)
@@ -162,7 +162,17 @@ function selector(combinationSpace: IElementVolume[]): string {
         .value();
 }
 
-function subsetEvolutionInternal(document: Document, targets: HTMLElement[], maxRecursion: number, excludedMarkers: IElementMarker[], userExclusions?: IExclusionFilter[]): ISelector | null {
+function validateSelector(selector: string, anchor: HTMLElement, targets: HTMLElement[]) {
+    const matches = anchor.querySelectorAll(selector);
+
+    return {
+        valid: matches.length === targets.length
+            && [...matches].every(match => targets.includes(match as HTMLElement)),
+        matches
+    };
+}
+
+function subsetEvolutionInternal(document: Document, targets: HTMLElement[], maxRecursion: number, excludedMarkers: IElementMarker[], userExclusions?: IExclusionFilter[]): IInternalSelector | null {
     if (!document)
         throw new Error(`document is required`);
 
@@ -171,7 +181,11 @@ function subsetEvolutionInternal(document: Document, targets: HTMLElement[], max
 
     if (targets.every(target => target.id !== undefined && target.id !== null && target.id.trim() !== ""))
         return {
-            selector: `#${targets[0].id}`
+            selector: `#${targets[0].id}`,
+            example: {
+                document,
+                target: targets
+            }
         };
 
     const allAnchors = targets.map(target => closestParentWithId(document.body, target));
@@ -236,23 +250,26 @@ function subsetEvolutionInternal(document: Document, targets: HTMLElement[], max
 
     do {
         const selectorCandidate = selector(combinationSpace);
-        const matches = anchorParent.element.querySelectorAll(selectorCandidate);
+        const validationResult = validateSelector(selectorCandidate, anchorParent.element, targets);
 
-        if (matches.length === targets.length
-            && [...matches].every(match => targets.includes(match as HTMLElement))) {
+        if (validationResult.valid) {
 
             return {
                 combinationSpace,
                 selector: anchorParent.element.id
                     ? `#${anchorParent.element.id} ${selectorCandidate}`
                     : selectorCandidate,
-                ...(excludedMarkers.length ? { excludedMarkers } : undefined)
+                ...(excludedMarkers.length ? { excludedMarkers } : undefined),
+                example: {
+                    document,
+                    target: targets
+                }
             }
         }
 
         if (targets.length > 1
-            && matches.length > 1
-            && matches.length < targets.length) {
+            && validationResult.matches.length > 1
+            && validationResult.matches.length < targets.length) {
             // This is multiple targets corner-case - we've matched on something thats unique to only one of the targets but not others
             // We need to rollback the last mutation and identify that particular marker as excluded
             if (!lastCombinationSpace || !mutationMarker)
@@ -371,16 +388,16 @@ function subsetEvolutionInternal(document: Document, targets: HTMLElement[], max
 }
 
 export async function subsetEvolution(options: ISelectorLoomOptions): Promise<ISelector | null> {
-        
-    const results: (ISelector | null)[] = [];
+
+    const results: IInternalSelector[] = [];
     const excludedMarkers: IElementMarker[] = [];
 
     for await (const example of options.examples) {
         const result = subsetEvolutionInternal(
-            example.document, 
+            example.document,
             Array.isArray(example.target)
                 ? example.target
-                : [ example.target],
+                : [example.target],
             options.maxRecursion ?? 100,
             excludedMarkers,
             !options.exclusions || Array.isArray(options.exclusions) ? options.exclusions : [options.exclusions]);
@@ -388,16 +405,49 @@ export async function subsetEvolution(options: ISelectorLoomOptions): Promise<IS
         if (!result)
             return null;
 
-        if (!results.length
-            && results.every(priorResult => priorResult?.selector === result.selector)) {
+        results.push(result);
+    }
 
-            results.push(result);
-        }
-        else {
-            // resolve the differences, isolate a selector segment which cannot be used and retry
-            throw new Error("TODO");
+    const groups = chain(results)
+        .groupBy(result => result?.selector)
+        .orderBy(group => group.length, "desc")
+        .value();
+
+    if (groups.length > 1) {
+        // Multiple versions of selectors were generated. Try to reconcile - start with the most common one and see if it would work for the rest of the examples which resulted in different selectors
+        for (const currentGroup of groups) {
+            const selectorCandidate = currentGroup[0]?.selector as string;
+            if (chain(groups)
+                .filter(group => group !== currentGroup)
+                .flatten()
+                .every(internalSelector =>
+                    validateSelector(
+                        selectorCandidate,
+                        internalSelector.example.document.body,
+                        Array.isArray(internalSelector.example.target)
+                            ? internalSelector.example.target
+                            : [internalSelector.example.target])
+                        .valid)
+                .value()) {
+                return {
+                    selector: selectorCandidate,
+                    logs: (currentGroup[0]?.logs ?? [])
+                        .concat({
+                            "info": `Example set resulted in ${groups.length} selector versions. A common version was found and successfully validated across the full set.`,
+                            "details": groups
+                                .map(group => ({
+                                    selector: group[0].selector,
+                                    count: group.length,
+                                    examples: group.map(selector => selector.example)
+                                }))
+                        })
+                }
+            }
         }
     }
 
-    return results[0];
+    return {
+        selector: results[0].selector,
+        logs: results[0].logs
+    };
 }

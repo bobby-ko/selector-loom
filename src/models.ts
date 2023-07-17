@@ -1,3 +1,5 @@
+import { IExample } from "./selector-loom-options"
+
 export enum MarkerType {
     "tag",
     "class",
@@ -26,7 +28,12 @@ export interface IElementMarker extends IMarker {
 }
 
 export interface ISelector {
-    combinationSpace?: IElementVolume[],
     selector: string,
-    excludedMarkers?: IElementMarker[]
+    logs?: Record<string, any>[]
+}
+
+export interface IInternalSelector extends ISelector {
+    combinationSpace?: IElementVolume[],
+    excludedMarkers?: IElementMarker[],
+    example: IExample
 }

@@ -1,8 +1,11 @@
 import { MarkerType } from "./models.js"
 
-export interface IExample { 
+export interface IExample {
     document: Document,
     target: HTMLElement | HTMLElement[]
+
+    /** User metadata/reference records. These are not intended to by the algorithm, but rather for tracing & debugging purposes */
+    metadata?: Record<string, any>;
 }
 
 export interface IExclusionFilter {

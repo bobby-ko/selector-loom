@@ -8,7 +8,7 @@ export { ISelector, MarkerType, IElementVolume, IElementMarker } from "./models.
 /**
  * Tries to constructs a unique and optimized CSS selector for all the target elements, and only the target elements, across all the provided examples.
  * 
- * Note! It is important to provide consistent targets across the examples 
+ * Note! It is important to provide consistent pages and targets across the examples
  * 
  * @param options input options as defined by ISelectorLoomOptions
  * @returns An ISelector result or null if a selector could not be constructed. The selector is guaranteed to match all the targets, and only the targets
