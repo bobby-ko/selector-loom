@@ -9,5 +9,13 @@
             "problemMatcher": [],
             "detail": "ts-node build.ts && tsc --build tsconfig.json"
         },
+        {
+            "type": "npm",
+            "script": "test",
+            "group": "test",
+            "problemMatcher": [],
+            "label": "npm: test",
+            "detail": "vitest --coverage"
+        }
     ]
 }

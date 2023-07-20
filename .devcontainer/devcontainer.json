@@ -27,7 +27,8 @@
 			"extensions": [
 				"streetsidesoftware.code-spell-checker",
 				"IronGeek.vscode-env",
-				"rangav.vscode-thunder-client"
+				"rangav.vscode-thunder-client",
+				"ZixuanChen.vitest-explorer"
 			]
 		}
 	},

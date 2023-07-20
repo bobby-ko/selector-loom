@@ -64,7 +64,8 @@ function segmentedSelector(marker: IWeighted): (string | null)[] {
             return [null, `.${marker.item}`, null];
 
         case MarkerType.attribute:
-            return [null, null, `[${marker.item}]`];
+            const pair = marker.item.split("=");
+            return [null, null, `[${pair[0]}='${pair[1]}']`];
 
         case MarkerType.tag:
             return [marker.item.toLowerCase(), null, null];
@@ -74,11 +75,11 @@ function segmentedSelector(marker: IWeighted): (string | null)[] {
 function merge(target: (string | null)[], source: IWeighted): (string | null)[] {
     let i = 0;
     for (const newSegment of segmentedSelector(source)) {
-        if (!newSegment)
-            continue;
-
-        const segment = target[i];
-        target[i] = (segment ?? "") + newSegment;
+        if (newSegment)
+        {
+            const segment = target[i];
+            target[i] = (segment ?? "") + newSegment;
+        }
         i++;
     }
 
@@ -88,9 +89,12 @@ function merge(target: (string | null)[], source: IWeighted): (string | null)[] 
 function $markers(element: HTMLElement, classDistribution: Record<string, number>, attributeDistribution: Record<string, number>, tagDistribution: Record<string, number>): CollectionChain<IWeighted> {
     return chain(weighted(element.classList.values(), classDistribution, MarkerType.class))
         .concat(weighted(
-            element.getAttributeNames()
+            chain(element.getAttributeNames())
                 .filter(attributeName => bs(excludedAttributes, attributeName, (a, b) => a < b ? -1 : a > b ? 1 : 0) < 0)
-                .map(attributeName => `${attributeName}=${element.attributes.getNamedItem(attributeName)}`), attributeDistribution, MarkerType.class))
+                .map(attributeName => `${attributeName}=${element.attributes.getNamedItem(attributeName)?.value}`)
+                .value(), 
+            attributeDistribution, 
+            MarkerType.attribute))
         .concat(weighted([element.tagName], tagDistribution, MarkerType.tag))
         .filter(marker => marker.weight > 0);
 }
@@ -142,7 +146,10 @@ function selector(combinationSpace: IElementVolume[]): string {
             (accum, elementSpace, i) => {
                 accum.push({
                     distance: elementSpace.depthDelta,
-                    selector: chain(elementSpace.selectorSegments).map(selectorPart => selectorPart ?? "").join("").value()
+                    selector: chain(elementSpace.selectorSegments)
+                        .map(selectorPart => selectorPart ?? "")
+                        .join("")
+                        .value()
                 });
                 return accum;
             },
@@ -304,10 +311,10 @@ function subsetEvolutionInternal(document: Document, targets: HTMLElement[], max
                     const mutatedElementVolume = {
                         depthDelta: elementVolume.depthDelta,
                         element: elementVolume.element,
-                        selector: merge(cloneDeep(elementVolume.selectorSegments), newMarker),
+                        selectorSegments: merge(cloneDeep(elementVolume.selectorSegments), newMarker),
                         markers: elementVolume.markers,
                         usedMarkers: elementVolume.usedMarkers.concat(newMarker)
-                    };
+                    } as IElementVolume;
 
                     const mutatedCombinationSpace = combinationSpace.map(eVol => eVol === elementVolume ? mutatedElementVolume : eVol);
                     const mutatedSelectorCandidate = selector(combinationSpace);
@@ -328,7 +335,7 @@ function subsetEvolutionInternal(document: Document, targets: HTMLElement[], max
                 return null;
             })
 
-            // some elementVolumes might have exhausted all markers so there wont bew any new mutations from those 
+            // some elementVolumes might have exhausted all markers so there won't be any new mutations from those 
             .filter(mutation => mutation != null)
 
             .concat((() => {
@@ -377,6 +384,10 @@ function subsetEvolutionInternal(document: Document, targets: HTMLElement[], max
                     : bestFit)
 
             .value();
+
+        // cant 
+        if (!mutation)
+            break;
 
         lastCombinationSpace = combinationSpace;
         mutationMarker = mutation.mutationMarker;
