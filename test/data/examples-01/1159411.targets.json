@@ -1,3 +1,5 @@
-[
-  "id(\"8oaad-body\")/DIV[1]/DIV[2]/DIV[1]/DIV[2]/DIV[1]/DIV[1]/DIV[1]/DIV[3]/DIV[1]/DIV[3]/DIV[1]/A[2]/SPAN[1]"
-]
+{
+  "targets": [
+    "id(\"8oaad-body\")/DIV[1]/DIV[2]/DIV[1]/DIV[2]/DIV[1]/DIV[1]/DIV[1]/DIV[3]/DIV[1]/DIV[3]/DIV[1]/A[2]/SPAN[1]"
+  ]
+}

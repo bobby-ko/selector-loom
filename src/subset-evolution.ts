@@ -1,6 +1,6 @@
 import bs from "binary-search";
 import _, { CollectionChain } from 'lodash';
-const { chain, cloneDeep, last, orderBy } = _;
+const { chain, cloneDeep, last, orderBy, concat } = _;
 
 import { IElementMarker, IElementVolume, IInternalSelector, ISelector, IWeighted, MarkerType } from "./models.js";
 import { ISelectorLoomOptions, IExclusionFilter } from "./selector-loom-options.js";
@@ -26,6 +26,11 @@ const excludedAttributes = orderBy([
     "width"
 ]) as readonly string[];
 
+enum Strategy {
+    AnchorAsCommonParent,
+    LabelTargetNeighboringParents
+}
+
 interface ICombinationSpaceMutation {
     combinationSpace: IElementVolume[],
     matches: NodeListOf<Element>,
@@ -48,6 +53,17 @@ function closestParentWithId(body: HTMLElement, target: HTMLElement): { element:
         element: closestParentWithId,
         depthDelta
     };
+}
+
+function isParent(target: HTMLElement, potentialParent: HTMLElement): Boolean {
+    let parent = target.parentElement;
+    while (parent)
+    {
+        if (parent === potentialParent)
+            return true;
+        parent = parent.parentElement
+    }
+    return false;
 }
 
 function weighted(list: string[] | IterableIterator<string>, distribution: Record<string, number>, type: MarkerType): IWeighted[] {
@@ -179,12 +195,39 @@ function validateSelector(selector: string, anchor: HTMLElement, targets: HTMLEl
     };
 }
 
-function subsetEvolutionInternal(document: Document, targets: HTMLElement[], maxRecursion: number, excludedMarkers: IElementMarker[], userExclusions?: IExclusionFilter[]): IInternalSelector | null {
+function anchorSelector(idElement: HTMLElement, anchorElement: HTMLElement, label: HTMLElement | undefined, strategy: Strategy) {
+    if (!label)
+        return "";
+
+    const neighboringParents = strategy === Strategy.LabelTargetNeighboringParents;
+    if (neighboringParents)
+        anchorElement = anchorElement.previousElementSibling as HTMLElement;
+
+    const labelSelector = (label?.id ?? "") != ""
+        ? `#${label.id}`
+        : `${label.tagName.toLowerCase()}:contains('${label.textContent?.trim()}')`;
+
+    let result = `${(neighboringParents ? anchorElement.previousElementSibling as HTMLElement : anchorElement).tagName.toLowerCase()}:has(${labelSelector}) ${(neighboringParents ? "+ " + anchorElement.tagName.toLowerCase() + " " : "")}`;
+
+    if (idElement.querySelectorAll(result).length > 1)
+    {
+        const anchorParent = anchorElement.parentElement;
+        if (anchorParent !== idElement)
+            result = `${anchorParent?.tagName.toLocaleLowerCase()} > ${result}`
+    }
+
+    return result;
+}
+
+function subsetEvolutionInternal(document: Document, label: HTMLElement | undefined, targets: HTMLElement[], maxRecursion: number, excludedMarkers: IElementMarker[], userExclusions?: IExclusionFilter[]): IInternalSelector | null {
     if (!document)
         throw new Error(`document is required`);
 
     if (!targets?.length)
         throw new Error(`At least one target is required`);
+
+    if (label && (label.textContent?.trim() ?? "") === "")
+        throw new Error(`Label needs to contain text`);
 
     if (targets.every(target => target.id !== undefined && target.id !== null && target.id.trim() !== ""))
         return {
@@ -195,9 +238,12 @@ function subsetEvolutionInternal(document: Document, targets: HTMLElement[], max
             }
         };
 
-    const allAnchors = targets.map(target => closestParentWithId(document.body, target));
+    const allAnchors = chain(targets)
+        .concat(label ? [label] : [])
+        .map(target => closestParentWithId(document.body, target))
+        .value()
 
-    const anchorParent = allAnchors.every(anchor => anchor.element === allAnchors[0].element)
+    const idParent = allAnchors.every(anchor => anchor.element === allAnchors[0].element)
 
         ? allAnchors[0]
 
@@ -216,184 +262,271 @@ function subsetEvolutionInternal(document: Document, targets: HTMLElement[], max
             };
         })();
 
-    const classDistribution: Record<string, number> = {};
-    const attributeDistribution: Record<string, number> = {};
-    const tagDistribution: Record<string, number> = {};
+    let anchorParent!: {
+        element: HTMLElement;
+        depthDelta: number;
+    };
 
-    const elements = anchorParent.element.querySelectorAll("*");
-    const distanceWeightReductionFactor = 1.0 / anchorParent.depthDelta;
+    if (!label)
+        anchorParent = idParent
+    else
+    {
+        let commonParent = label.parentElement;
+        let depthDelta = 1;
+        while (commonParent)
+        {
+            if (targets.every(target => isParent(target, commonParent as HTMLElement)))
+                break;
 
-    for (const element of elements) {
-        for (const className of element.classList) {
-            const count = classDistribution[className];
-            classDistribution[className] = (count ?? 0) + 1;
+            commonParent = commonParent.parentElement;
+            depthDelta++;
         }
 
-        for (const attribute of element.attributes) {
-            const attributeName = attribute.name;
-            if (excludedAttributes.includes(attributeName)
-                || attributeName.startsWith("aria"))
-                continue;
+        if (commonParent === idParent.element)
+            anchorParent = idParent
+        else
+        {
+            if (!commonParent)
+                throw new Error("Could not find common parent for label and target(s)");
 
-            const attributeLabel = `${attributeName}=${attribute.value}`;
-            const count = attributeDistribution[attributeLabel];
-            attributeDistribution[attributeLabel] = (count ?? 0) + 1;
-        }
+            if (!isParent(commonParent, idParent.element))
+                throw new Error("Common parent between label and target(s) is expected to be under idParent");
 
-        const count = tagDistribution[element.tagName];
-        tagDistribution[element.tagName] = (count ?? 0) + 1;
-    }
-
-    let combinationSpace: IElementVolume[] = [volume(
-        targets[0],
-        0,
-        classDistribution,
-        attributeDistribution,
-        tagDistribution)];
-
-    let lastCombinationSpace: IElementVolume[] | undefined;
-    let mutationMarker: IElementMarker | undefined;
-    excludedMarkers = excludedMarkers ?? [];
-
-    do {
-        const selectorCandidate = selector(combinationSpace);
-        const validationResult = validateSelector(selectorCandidate, anchorParent.element, targets);
-
-        if (validationResult.valid) {
-
-            return {
-                combinationSpace,
-                selector: anchorParent.element.id
-                    ? `#${anchorParent.element.id} ${selectorCandidate}`
-                    : selectorCandidate,
-                ...(excludedMarkers.length ? { excludedMarkers } : undefined),
-                example: {
-                    document,
-                    target: targets
-                }
+            anchorParent = {
+                element: commonParent,
+                depthDelta
             }
         }
+    }
 
-        if (targets.length > 1
-            && validationResult.matches.length > 1
-            && validationResult.matches.length < targets.length) {
-            // This is multiple targets corner-case - we've matched on something thats unique to only one of the targets but not others
-            // We need to rollback the last mutation and identify that particular marker as excluded
-            if (!lastCombinationSpace || !mutationMarker)
-                throw new Error(`Unexpected missing lastCombinationSpace or mutationMarker`);
+    let retry = false;
+    let strategy = Strategy.AnchorAsCommonParent;
+    do
+    {
+        retry = false;
 
-            combinationSpace = lastCombinationSpace;
-            excludedMarkers.push(mutationMarker);
+        const classDistribution: Record<string, number> = {};
+        const attributeDistribution: Record<string, number> = {};
+        const tagDistribution: Record<string, number> = {};
 
-            continue;
+        const elements = anchorParent.element.querySelectorAll("*");
+        const distanceWeightReductionFactor = 1.0 / anchorParent.depthDelta;
+
+        for (const element of elements) {
+            for (const className of element.classList) {
+                if (userExclusions?.some(exclusion => 
+                    (!exclusion.elements || exclusion.elements === element)
+                    && (!exclusion.type || exclusion.type === MarkerType.class)
+                    && (exclusion.value === undefined || exclusion.value === className)))
+                    continue;
+
+                const count = classDistribution[className];
+                classDistribution[className] = (count ?? 0) + 1;
+            }
+
+            for (const attribute of element.attributes) {
+                const attributeName = attribute.name;
+                if (excludedAttributes.includes(attributeName)
+                    || attributeName.startsWith("aria"))
+                    continue;
+
+                if (userExclusions?.some(exclusion => 
+                    (!exclusion.elements || exclusion.elements === element)
+                    && (!exclusion.type || exclusion.type === MarkerType.attribute)
+                    && (exclusion.value === undefined || exclusion.value === attributeName)))
+                    continue;
+    
+                const attributeLabel = `${attributeName}=${attribute.value}`;
+                const count = attributeDistribution[attributeLabel];
+                attributeDistribution[attributeLabel] = (count ?? 0) + 1;
+            }
+
+            if (userExclusions?.some(exclusion => 
+                (!exclusion.elements || exclusion.elements === element)
+                && (!exclusion.type || exclusion.type === MarkerType.tag)
+                && (exclusion.value === undefined || exclusion.value === element.tagName)))
+                continue;
+
+            const count = tagDistribution[element.tagName];
+            tagDistribution[element.tagName] = (count ?? 0) + 1;
         }
 
-        // Explore two possibilities (mutations):
-        // 1. Use another marker on any existing element already in the volume
-        // 2. Add a new element to the volume from the parent chain with a top marker
-        // Pick the best fitted mutation
+        let combinationSpace: IElementVolume[] = [volume(
+            targets[0],
+            0,
+            classDistribution,
+            attributeDistribution,
+            tagDistribution)];
 
-        const mutation = chain(combinationSpace)
+        let lastCombinationSpace: IElementVolume[] | undefined;
+        let mutationMarker: IElementMarker | undefined;
+        excludedMarkers = excludedMarkers ?? [];
 
-            // generate a set of combinationSpaces, each exploring a new mutation for an elementVolume
-            .map(elementVolume => {
+        do {
+            const selectorCandidate = selector(combinationSpace);
+            const validationResult = validateSelector(selectorCandidate, anchorParent.element, targets);
 
-                const newMarker = topMarker(
-                    elementVolume.element,
-                    classDistribution,
-                    attributeDistribution,
-                    tagDistribution,
-                    elementVolume.usedMarkers,
-                    excludedMarkers,
-                    userExclusions);
+            if (validationResult.valid) {
 
-                if (newMarker) {
-                    const mutatedElementVolume = {
-                        depthDelta: elementVolume.depthDelta,
-                        element: elementVolume.element,
-                        selectorSegments: merge(cloneDeep(elementVolume.selectorSegments), newMarker),
-                        markers: elementVolume.markers,
-                        usedMarkers: elementVolume.usedMarkers.concat(newMarker)
-                    } as IElementVolume;
+                const anchorSelectorVal = anchorSelector(
+                    idParent.element,
+                    anchorParent.element,
+                    label,
+                    strategy);
 
-                    const mutatedCombinationSpace = combinationSpace.map(eVol => eVol === elementVolume ? mutatedElementVolume : eVol);
+                return {
+                    combinationSpace,
+                    selector: idParent.element.id
+                        ? `#${idParent.element.id} ${anchorSelectorVal}${selectorCandidate}`
+                        : selectorCandidate,
+                    ...(excludedMarkers.length ? { excludedMarkers } : undefined),
+                    example: {
+                        document,
+                        target: targets
+                    }
+                }
+            }
+
+            if (targets.length > 1
+                && validationResult.matches.length > 1
+                && validationResult.matches.length < targets.length) {
+                // This is multiple targets corner-case - we've matched on something thats unique to only one of the targets but not others
+                // We need to rollback the last mutation and identify that particular marker as excluded
+                if (!lastCombinationSpace || !mutationMarker)
+                    throw new Error(`Unexpected missing lastCombinationSpace or mutationMarker`);
+
+                combinationSpace = lastCombinationSpace;
+                excludedMarkers.push(mutationMarker);
+
+                continue;
+            }
+
+            // Explore two possibilities (mutations):
+            // 1. Use another marker on any existing element already in the volume
+            // 2. Add a new element to the volume from the parent chain with a top marker
+            // Pick the best fitted mutation
+
+            const mutation = chain(combinationSpace)
+
+                // generate a set of combinationSpaces, each exploring a new mutation for an elementVolume
+                .map(elementVolume => {
+
+                    const newMarker = topMarker(
+                        elementVolume.element,
+                        classDistribution,
+                        attributeDistribution,
+                        tagDistribution,
+                        elementVolume.usedMarkers,
+                        excludedMarkers,
+                        userExclusions);
+
+                    if (newMarker) {
+                        const mutatedElementVolume = {
+                            depthDelta: elementVolume.depthDelta,
+                            element: elementVolume.element,
+                            selectorSegments: merge(cloneDeep(elementVolume.selectorSegments), newMarker),
+                            markers: elementVolume.markers,
+                            usedMarkers: elementVolume.usedMarkers.concat(newMarker)
+                        } as IElementVolume;
+
+                        const mutatedCombinationSpace = combinationSpace.map(eVol => eVol === elementVolume ? mutatedElementVolume : eVol);
+                        const mutatedSelectorCandidate = selector(combinationSpace);
+                        const matches = anchorParent.element.querySelectorAll(mutatedSelectorCandidate);
+
+                        return {
+                            combinationSpace: mutatedCombinationSpace,
+                            matches,
+                            mutationDepthDelta: elementVolume.depthDelta,
+                            mutationMarker: {
+                                element: elementVolume.element,
+                                item: newMarker.item,
+                                type: newMarker.type
+                            }
+                        } as ICombinationSpaceMutation;
+                    }
+
+                    return null;
+                })
+
+                // some elementVolumes might have exhausted all markers so there won't be any new mutations from those 
+                .filter(mutation => mutation != null)
+
+                .concat((() => {
+                    const lastCombinationSpace = last(combinationSpace) as IElementVolume;
+                    const nextParentElement = lastCombinationSpace.element.parentElement as HTMLElement;
+                    if (nextParentElement === anchorParent.element)
+                        return [];
+
+                    const depthDelta = lastCombinationSpace.depthDelta + 1;
+
+                    const newElementVolume = volume(
+                        nextParentElement,
+                        depthDelta,
+                        classDistribution,
+                        attributeDistribution,
+                        tagDistribution
+                    );
+                    const mutatedCombinationSpace = combinationSpace.concat(newElementVolume);
+
                     const mutatedSelectorCandidate = selector(combinationSpace);
                     const matches = anchorParent.element.querySelectorAll(mutatedSelectorCandidate);
 
-                    return {
+                    return [{
                         combinationSpace: mutatedCombinationSpace,
                         matches,
-                        mutationDepthDelta: elementVolume.depthDelta,
+                        mutationDepthDelta: depthDelta,
                         mutationMarker: {
-                            element: elementVolume.element,
-                            item: newMarker.item,
-                            type: newMarker.type
+                            element: nextParentElement,
+                            item: newElementVolume.usedMarkers[0].item,
+                            type: newElementVolume.usedMarkers[0].type
                         }
-                    } as ICombinationSpaceMutation;
+                    } as ICombinationSpaceMutation];
+                })())
+
+                // Find the best fitted mutation
+                // Ranking is a formula reversely proportionate to number of matches and proportionate to mutations closer to the target element:
+                // - The less number of matches the better
+                // - The closer (mutated element sub-selector's position) relative to target element the better
+                .reduce((bestFit, mutation) =>
+                    !bestFit
+                        || ((mutation as ICombinationSpaceMutation).matches.length / (1.0 - distanceWeightReductionFactor * (mutation as ICombinationSpaceMutation).mutationDepthDelta))
+                        < ((bestFit.matches.length ?? elements.length) / (1.0 - distanceWeightReductionFactor * bestFit.mutationDepthDelta))
+
+                        ? mutation
+
+                        : bestFit)
+
+                .value();
+
+            // cant 
+            if (!mutation)
+            {
+                if (label && strategy === Strategy.AnchorAsCommonParent)
+                {
+                    strategy = Strategy.LabelTargetNeighboringParents;
+                    const newAnchorParentElement = [...anchorParent.element.children]
+                        .find(closerParent => targets.every(target => isParent(target, closerParent as HTMLElement))) as HTMLElement | undefined;
+
+                    if (!newAnchorParentElement)
+                        throw new Error("Could not find nested parent for the sibling relationship strategy");
+
+                    anchorParent = {
+                        element: newAnchorParentElement,
+                        depthDelta: anchorParent.depthDelta - 1
+                    };
+                    retry = true;
                 }
 
-                return null;
-            })
+                break;
+            }
 
-            // some elementVolumes might have exhausted all markers so there won't be any new mutations from those 
-            .filter(mutation => mutation != null)
-
-            .concat((() => {
-                const lastCombinationSpace = last(combinationSpace) as IElementVolume;
-                const nextParentElement = lastCombinationSpace.element.parentElement as HTMLElement;
-                if (nextParentElement === anchorParent.element)
-                    return [];
-
-                const depthDelta = lastCombinationSpace.depthDelta + 1;
-
-                const newElementVolume = volume(
-                    nextParentElement,
-                    depthDelta,
-                    classDistribution,
-                    attributeDistribution,
-                    tagDistribution
-                );
-                const mutatedCombinationSpace = combinationSpace.concat(newElementVolume);
-
-                const mutatedSelectorCandidate = selector(combinationSpace);
-                const matches = anchorParent.element.querySelectorAll(mutatedSelectorCandidate);
-
-                return [{
-                    combinationSpace: mutatedCombinationSpace,
-                    matches,
-                    mutationDepthDelta: depthDelta,
-                    mutationMarker: {
-                        element: nextParentElement,
-                        item: newElementVolume.usedMarkers[0].item,
-                        type: newElementVolume.usedMarkers[0].type
-                    }
-                } as ICombinationSpaceMutation];
-            })())
-
-            // Find the best fitted mutation
-            // Ranking is a formula reversely proportionate to number of matches and proportionate to mutations closer to the target element:
-            // - The less number of matches the better
-            // - The closer (mutated element sub-selector's position) relative to target element the better
-            .reduce((bestFit, mutation) =>
-                !bestFit
-                    || ((mutation as ICombinationSpaceMutation).matches.length / (1.0 - distanceWeightReductionFactor * (mutation as ICombinationSpaceMutation).mutationDepthDelta))
-                    < ((bestFit.matches.length ?? elements.length) / (1.0 - distanceWeightReductionFactor * bestFit.mutationDepthDelta))
-
-                    ? mutation
-
-                    : bestFit)
-
-            .value();
-
-        // cant 
-        if (!mutation)
-            break;
-
-        lastCombinationSpace = combinationSpace;
-        mutationMarker = mutation.mutationMarker;
-        combinationSpace = mutation.combinationSpace;
+            lastCombinationSpace = combinationSpace;
+            mutationMarker = mutation.mutationMarker;
+            combinationSpace = mutation.combinationSpace;
+        }
+        while (maxRecursion--);
     }
-    while (maxRecursion--);
+    while (retry)
 
     return null;
 }
@@ -406,6 +539,7 @@ export async function subsetEvolution(options: ISelectorLoomOptions): Promise<IS
     for await (const example of options.examples) {
         const result = subsetEvolutionInternal(
             example.document,
+            example.label,
             Array.isArray(example.target)
                 ? example.target
                 : [example.target],

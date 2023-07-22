@@ -2,6 +2,7 @@ import { MarkerType } from "./models.js"
 
 export interface IExample {
     document: Document,
+    label?: HTMLElement,
     target: HTMLElement | HTMLElement[]
 
     /** User metadata/reference records. These are not intended to by the algorithm, but rather for tracing & debugging purposes */

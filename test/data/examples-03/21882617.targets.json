@@ -1,0 +1,6 @@
+{
+    "label": "//*[@id=\"description\"]",
+    "targets": [
+        "//*[@id=\":R10qljl59l1i6:\"]/div/span"
+    ]
+}

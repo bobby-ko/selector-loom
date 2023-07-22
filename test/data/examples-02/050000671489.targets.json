@@ -1,9 +1,13 @@
-[
-  "id(\"tabContent-tab-Details\")/DIV[1]/DIV[1]/DIV[1]/DIV[2]/DIV[2]/DIV[1]/UL[1]/DIV[1]/DIV[1]/LI[1]/SPAN[1]",
-  "id(\"tabContent-tab-Details\")/DIV[1]/DIV[1]/DIV[1]/DIV[2]/DIV[2]/DIV[1]/UL[1]/DIV[1]/DIV[2]/LI[1]/SPAN[1]",
-  "id(\"tabContent-tab-Details\")/DIV[1]/DIV[1]/DIV[1]/DIV[2]/DIV[2]/DIV[1]/UL[1]/DIV[1]/DIV[3]/LI[1]/SPAN[1]",
-  "id(\"tabContent-tab-Details\")/DIV[1]/DIV[1]/DIV[1]/DIV[2]/DIV[2]/DIV[1]/UL[1]/DIV[1]/DIV[4]/LI[1]/SPAN[1]",
-  "id(\"tabContent-tab-Details\")/DIV[1]/DIV[1]/DIV[1]/DIV[2]/DIV[2]/DIV[1]/UL[1]/DIV[1]/DIV[5]/LI[1]/SPAN[1]",
-  "id(\"tabContent-tab-Details\")/DIV[1]/DIV[1]/DIV[1]/DIV[2]/DIV[2]/DIV[1]/UL[1]/DIV[1]/DIV[6]/LI[1]/SPAN[1]",
-  "id(\"tabContent-tab-Details\")/DIV[1]/DIV[1]/DIV[1]/DIV[2]/DIV[2]/DIV[1]/UL[1]/DIV[1]/DIV[7]/LI[1]/SPAN[1]"
-]
+{
+  "targets": {
+    "targets": [
+      "id(\"tabContent-tab-Details\")/DIV[1]/DIV[1]/DIV[1]/DIV[2]/DIV[2]/DIV[1]/UL[1]/DIV[1]/DIV[1]/LI[1]/SPAN[1]",
+      "id(\"tabContent-tab-Details\")/DIV[1]/DIV[1]/DIV[1]/DIV[2]/DIV[2]/DIV[1]/UL[1]/DIV[1]/DIV[2]/LI[1]/SPAN[1]",
+      "id(\"tabContent-tab-Details\")/DIV[1]/DIV[1]/DIV[1]/DIV[2]/DIV[2]/DIV[1]/UL[1]/DIV[1]/DIV[3]/LI[1]/SPAN[1]",
+      "id(\"tabContent-tab-Details\")/DIV[1]/DIV[1]/DIV[1]/DIV[2]/DIV[2]/DIV[1]/UL[1]/DIV[1]/DIV[4]/LI[1]/SPAN[1]",
+      "id(\"tabContent-tab-Details\")/DIV[1]/DIV[1]/DIV[1]/DIV[2]/DIV[2]/DIV[1]/UL[1]/DIV[1]/DIV[5]/LI[1]/SPAN[1]",
+      "id(\"tabContent-tab-Details\")/DIV[1]/DIV[1]/DIV[1]/DIV[2]/DIV[2]/DIV[1]/UL[1]/DIV[1]/DIV[6]/LI[1]/SPAN[1]",
+      "id(\"tabContent-tab-Details\")/DIV[1]/DIV[1]/DIV[1]/DIV[2]/DIV[2]/DIV[1]/UL[1]/DIV[1]/DIV[7]/LI[1]/SPAN[1]"
+    ]
+  }
+}
