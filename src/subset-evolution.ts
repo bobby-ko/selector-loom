@@ -1,6 +1,7 @@
 import bs from "binary-search";
+import jquery from "jquery";
 import _, { CollectionChain } from 'lodash';
-const { chain, cloneDeep, last, orderBy, concat } = _;
+const { chain, cloneDeep, last, orderBy } = _;
 
 import { IElementMarker, IElementVolume, IInternalSelector, ISelector, IWeighted, MarkerType } from "./models.js";
 import { ISelectorLoomOptions, IExclusionFilter } from "./selector-loom-options.js";
@@ -57,8 +58,7 @@ function closestParentWithId(body: HTMLElement, target: HTMLElement): { element:
 
 function isParent(target: HTMLElement, potentialParent: HTMLElement): Boolean {
     let parent = target.parentElement;
-    while (parent)
-    {
+    while (parent) {
         if (parent === potentialParent)
             return true;
         parent = parent.parentElement
@@ -91,8 +91,7 @@ function segmentedSelector(marker: IWeighted): (string | null)[] {
 function merge(target: (string | null)[], source: IWeighted): (string | null)[] {
     let i = 0;
     for (const newSegment of segmentedSelector(source)) {
-        if (newSegment)
-        {
+        if (newSegment) {
             const segment = target[i];
             target[i] = (segment ?? "") + newSegment;
         }
@@ -108,8 +107,8 @@ function $markers(element: HTMLElement, classDistribution: Record<string, number
             chain(element.getAttributeNames())
                 .filter(attributeName => bs(excludedAttributes, attributeName, (a, b) => a < b ? -1 : a > b ? 1 : 0) < 0)
                 .map(attributeName => `${attributeName}=${element.attributes.getNamedItem(attributeName)?.value}`)
-                .value(), 
-            attributeDistribution, 
+                .value(),
+            attributeDistribution,
             MarkerType.attribute))
         .concat(weighted([element.tagName], tagDistribution, MarkerType.tag))
         .filter(marker => marker.weight > 0);
@@ -203,20 +202,32 @@ function anchorSelector(idElement: HTMLElement, anchorElement: HTMLElement, labe
     if (neighboringParents)
         anchorElement = anchorElement.previousElementSibling as HTMLElement;
 
-    const labelSelector = (label?.id ?? "") != ""
-        ? `#${label.id}`
-        : `${label.tagName.toLowerCase()}:contains('${label.textContent?.trim()}')`;
+    let anchorSelector: string;
+    const textContent = label.textContent?.trim();
 
-    let result = `${(neighboringParents ? anchorElement.previousElementSibling as HTMLElement : anchorElement).tagName.toLowerCase()}:has(${labelSelector}) ${(neighboringParents ? "+ " + anchorElement.tagName.toLowerCase() + " " : "")}`;
+    while (!label.tagName) {
+        const newLabel = (label as HTMLElement).parentElement;
+        if (!newLabel)
+            throw new Error(`Failed to get label's parent`);
 
-    if (idElement.querySelectorAll(result).length > 1)
-    {
-        const anchorParent = anchorElement.parentElement;
-        if (anchorParent !== idElement)
-            result = `${anchorParent?.tagName.toLocaleLowerCase()} > ${result}`
+        label = newLabel as HTMLElement;
     }
 
-    return result;
+    const labelSelector = (label?.id ?? "") != ""
+        ? `#${label.id}`
+        : `${label.tagName.toLowerCase()}:contains('${textContent}')`;
+
+    anchorSelector = `${(neighboringParents ? anchorElement.previousElementSibling as HTMLElement : anchorElement).tagName.toLowerCase()}:has(${labelSelector}) ${(neighboringParents ? "+ " + anchorElement.tagName.toLowerCase() + " " : "")}`;
+
+    const $ = jquery(idElement.ownerDocument.defaultView as Window);
+
+    if (($ as any)(`#${idElement.id} ${anchorSelector}`).length > 1) {
+        const anchorParent = anchorElement.parentElement;
+        if (anchorParent !== idElement)
+            anchorSelector = `${anchorParent?.tagName.toLocaleLowerCase()} > ${anchorSelector}`
+    }
+
+    return anchorSelector;
 }
 
 function subsetEvolutionInternal(document: Document, label: HTMLElement | undefined, targets: HTMLElement[], maxRecursion: number, excludedMarkers: IElementMarker[], userExclusions?: IExclusionFilter[]): IInternalSelector | null {
@@ -269,12 +280,10 @@ function subsetEvolutionInternal(document: Document, label: HTMLElement | undefi
 
     if (!label)
         anchorParent = idParent
-    else
-    {
+    else {
         let commonParent = label.parentElement;
         let depthDelta = 1;
-        while (commonParent)
-        {
+        while (commonParent) {
             if (targets.every(target => isParent(target, commonParent as HTMLElement)))
                 break;
 
@@ -284,8 +293,7 @@ function subsetEvolutionInternal(document: Document, label: HTMLElement | undefi
 
         if (commonParent === idParent.element)
             anchorParent = idParent
-        else
-        {
+        else {
             if (!commonParent)
                 throw new Error("Could not find common parent for label and target(s)");
 
@@ -301,8 +309,7 @@ function subsetEvolutionInternal(document: Document, label: HTMLElement | undefi
 
     let retry = false;
     let strategy = Strategy.AnchorAsCommonParent;
-    do
-    {
+    do {
         retry = false;
 
         const classDistribution: Record<string, number> = {};
@@ -314,7 +321,7 @@ function subsetEvolutionInternal(document: Document, label: HTMLElement | undefi
 
         for (const element of elements) {
             for (const className of element.classList) {
-                if (userExclusions?.some(exclusion => 
+                if (userExclusions?.some(exclusion =>
                     (!exclusion.elements || exclusion.elements === element)
                     && (!exclusion.type || exclusion.type === MarkerType.class)
                     && (exclusion.value === undefined || exclusion.value === className)))
@@ -330,18 +337,18 @@ function subsetEvolutionInternal(document: Document, label: HTMLElement | undefi
                     || attributeName.startsWith("aria"))
                     continue;
 
-                if (userExclusions?.some(exclusion => 
+                if (userExclusions?.some(exclusion =>
                     (!exclusion.elements || exclusion.elements === element)
                     && (!exclusion.type || exclusion.type === MarkerType.attribute)
                     && (exclusion.value === undefined || exclusion.value === attributeName)))
                     continue;
-    
+
                 const attributeLabel = `${attributeName}=${attribute.value}`;
                 const count = attributeDistribution[attributeLabel];
                 attributeDistribution[attributeLabel] = (count ?? 0) + 1;
             }
 
-            if (userExclusions?.some(exclusion => 
+            if (userExclusions?.some(exclusion =>
                 (!exclusion.elements || exclusion.elements === element)
                 && (!exclusion.type || exclusion.type === MarkerType.tag)
                 && (exclusion.value === undefined || exclusion.value === element.tagName)))
@@ -499,10 +506,8 @@ function subsetEvolutionInternal(document: Document, label: HTMLElement | undefi
                 .value();
 
             // cant 
-            if (!mutation)
-            {
-                if (label && strategy === Strategy.AnchorAsCommonParent)
-                {
+            if (!mutation) {
+                if (label && strategy === Strategy.AnchorAsCommonParent) {
                     strategy = Strategy.LabelTargetNeighboringParents;
                     const newAnchorParentElement = [...anchorParent.element.children]
                         .find(closerParent => targets.every(target => isParent(target, closerParent as HTMLElement))) as HTMLElement | undefined;
