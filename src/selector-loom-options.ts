@@ -15,6 +15,16 @@ export interface IExclusionFilter {
     value?: string | RegExp
 }
 
+export interface IInclusionFilter {
+    type?: MarkerType.id | MarkerType.class | MarkerType.attribute,
+    /** Minimum ratio of recognizable english words in value to be considered for use. Ratio is calculated as sum of all recognizable words' lengths relative to token's size */
+    requiredWordsRatio: number,
+    /** Minimum number of letters for a token to be considered a word. Defaults is 3 */
+    minWordLength?: number,
+    /** Defaults is 'en' */
+    languages?: string[]
+}
+
 export enum Algorithm {
     /**
      * This algorithm works in two parts:
@@ -34,6 +44,9 @@ export interface ISelectorLoomOptions {
     examples: IExample[] | AsyncIterableIterator<IExample>,
 
     maxRecursion?: number,
+
+    /** If set, restricts classNames and/or attribute values only to the ones that are composed of number of english words that make up a certain ratio of the total selector */
+    inclusions?: IInclusionFilter | IInclusionFilter[],
 
     /** One or more marker exclusion filters. Can be as broad or as narrow as:
      * - (exclude) "all class names that begin with 'cz-'" 

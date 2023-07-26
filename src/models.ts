@@ -1,7 +1,8 @@
 import { IExample } from "./selector-loom-options"
 
 export enum MarkerType {
-    tag = 1,
+    id = 1,
+    tag,
     class,
     attribute
 }

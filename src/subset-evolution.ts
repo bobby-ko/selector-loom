@@ -1,10 +1,12 @@
 import bs from "binary-search";
 import jquery from "jquery";
+import natural, { DataRecord } from "natural";
+const { WordTokenizer, WordNet, NounInflector } = natural;
 import _, { CollectionChain } from 'lodash';
 const { chain, cloneDeep, last, orderBy } = _;
 
 import { IElementMarker, IElementVolume, IInternalSelector, ISelector, IWeighted, MarkerType } from "./models.js";
-import { ISelectorLoomOptions, IExclusionFilter } from "./selector-loom-options.js";
+import { ISelectorLoomOptions, IExclusionFilter, IInclusionFilter } from "./selector-loom-options.js";
 
 const excludedAttributes = orderBy([
     "alt",
@@ -27,6 +29,16 @@ const excludedAttributes = orderBy([
     "width"
 ]) as readonly string[];
 
+const excludedWords = [
+    "the"
+]
+
+const tokenizer = new WordTokenizer();
+const nounInflector = new NounInflector();
+const wordnet = new WordNet();
+
+// const wordnetLookup
+
 enum Strategy {
     AnchorAsCommonParent,
     LabelTargetNeighboringParents
@@ -39,16 +51,88 @@ interface ICombinationSpaceMutation {
     mutationMarker: IElementMarker
 }
 
-function closestParentWithId(body: HTMLElement, target: HTMLElement): { element: HTMLElement, depthDelta: number } {
+async function getWordRatio(value: string, explicitInclusions: IInclusionFilter[]): Promise<number> {
+    let tokens = tokenizer.tokenize(value.replace(/[_0-9]+/g, " "));
+
+    if (!tokens || tokens.length === 0)
+        return 0;
+
+    for (const inclusion of explicitInclusions) {
+        if (inclusion.requiredWordsRatio <= 0 || inclusion.requiredWordsRatio > 1)
+            throw new Error("Invalid requiredWordsRatio value");
+
+
+        tokens = chain(tokens)
+            .filter(word =>
+                word.length >= (inclusion.minWordLength ?? 3)
+                && !excludedWords.includes(word.toLowerCase()))
+            .map(word => {
+                // split camel-notation tokens
+                const result: string[] = [];
+                const camelCaseMatch = /[a-z][A-Z][a-z]{2}/g.exec(word);
+
+                if (camelCaseMatch) {
+                    for (const match of camelCaseMatch) {
+                        const i = word.indexOf(match) + 1;
+                        result.push(word.substring(0, i));
+                        word = word.substring(i);
+                    }
+                    result.push(word);
+                }
+                else
+                    result.push(word);
+
+                return result;
+            })
+            .flatten()
+            .filter(word => !excludedWords.includes(word.toLowerCase()))
+            .value();
+    }
+
+    const wordTokens: string[] = [];
+    await Promise.all(tokens
+        .map(async word => {
+            const result: DataRecord[] = await new Promise((accept, reject) =>
+                wordnet.lookup(word, results => {
+                    if (results.length > 0)
+                        accept(results);
+                    else
+                        // try to singularize it - sometimes that results in better lookups for some words
+                        wordnet.lookup(nounInflector.singularize(word), results => accept(results));
+                }));
+
+            if (result.length >= 1)
+                wordTokens.push(word);
+        }));
+
+    return wordTokens.reduce((accum, word) => accum + word.length, 0) / value.replace(/[ \-_~:]+/g, "").length;
+}
+
+async function isIncluded(value: string, explicitInclusions?: IInclusionFilter[]): Promise<boolean> {
+    if (explicitInclusions) {
+        const wordsRatio = await getWordRatio(value, explicitInclusions);
+
+        for (const inclusion of explicitInclusions)
+            if (wordsRatio < inclusion.requiredWordsRatio)
+                return false;
+    }
+
+    return true;
+}
+
+async function closestParentWithId(body: HTMLElement, target: HTMLElement, idExplicitInclusions?: IInclusionFilter[]): Promise<{ element: HTMLElement, depthDelta: number }> {
     let closestParentWithId = target;
     let depthDelta = 0;
-    while (closestParentWithId !== body && !closestParentWithId.id)
+    while (closestParentWithId !== body
+        && (!closestParentWithId.id
+            || !await isIncluded(closestParentWithId.id, idExplicitInclusions))) {
         if (closestParentWithId.parentElement) {
             closestParentWithId = closestParentWithId.parentElement;
             depthDelta++;
         }
         else
             throw new Error("Broken DOM hierarchy");
+    }
 
     return {
         element: closestParentWithId,
@@ -85,6 +169,9 @@ function segmentedSelector(marker: IWeighted): (string | null)[] {
 
         case MarkerType.tag:
             return [marker.item.toLowerCase(), null, null];
+
+        default:
+            throw new Error("Marker not supported");
     }
 }
 
@@ -230,7 +317,7 @@ function anchorSelector(idElement: HTMLElement, anchorElement: HTMLElement, labe
     return anchorSelector;
 }
 
-function subsetEvolutionInternal(document: Document, label: HTMLElement | undefined, targets: HTMLElement[], maxRecursion: number, excludedMarkers: IElementMarker[], userExclusions?: IExclusionFilter[]): IInternalSelector | null {
+async function subsetEvolutionInternal(document: Document, label: HTMLElement | undefined, targets: HTMLElement[], maxRecursion: number, excludedMarkers: IElementMarker[], userInclusions?: IInclusionFilter[], userExclusions?: IExclusionFilter[]): Promise<IInternalSelector | null> {
     if (!document)
         throw new Error(`document is required`);
 
@@ -249,10 +336,12 @@ function subsetEvolutionInternal(document: Document, label: HTMLElement | undefi
             }
         };
 
-    const allAnchors = chain(targets)
+    const allAnchors = await Promise.all(targets
         .concat(label ? [label] : [])
-        .map(target => closestParentWithId(document.body, target))
-        .value()
+        .map(target => closestParentWithId(
+            document.body,
+            target,
+            userInclusions?.filter(userInclusion => userInclusion.type === MarkerType.id || !userInclusion?.type))));
 
     const idParent = allAnchors.every(anchor => anchor.element === allAnchors[0].element)
 
@@ -318,13 +407,16 @@ function subsetEvolutionInternal(document: Document, label: HTMLElement | undefi
 
         const elements = anchorParent.element.querySelectorAll("*");
         const distanceWeightReductionFactor = 1.0 / anchorParent.depthDelta;
+        const classListImplicitInclusions = userInclusions?.filter(inclusion => inclusion.type === MarkerType.class || !inclusion.type);
+        const attributeValueImplicitInclusions = userInclusions?.filter(inclusion => inclusion.type === MarkerType.attribute || !inclusion.type);
 
         for (const element of elements) {
             for (const className of element.classList) {
                 if (userExclusions?.some(exclusion =>
                     (!exclusion.elements || exclusion.elements === element)
                     && (!exclusion.type || exclusion.type === MarkerType.class)
-                    && (exclusion.value === undefined || exclusion.value === className)))
+                    && (exclusion.value === undefined || exclusion.value === className))
+                    || !await isIncluded(className, classListImplicitInclusions))
                     continue;
 
                 const count = classDistribution[className];
@@ -340,7 +432,8 @@ function subsetEvolutionInternal(document: Document, label: HTMLElement | undefi
                 if (userExclusions?.some(exclusion =>
                     (!exclusion.elements || exclusion.elements === element)
                     && (!exclusion.type || exclusion.type === MarkerType.attribute)
-                    && (exclusion.value === undefined || exclusion.value === attributeName)))
+                    && (exclusion.value === undefined || exclusion.value === attributeName))
+                    || !await isIncluded(attribute.value, attributeValueImplicitInclusions))
                     continue;
 
                 const attributeLabel = `${attributeName}=${attribute.value}`;
@@ -542,7 +635,7 @@ export async function subsetEvolution(options: ISelectorLoomOptions): Promise<IS
     const excludedMarkers: IElementMarker[] = [];
 
     for await (const example of options.examples) {
-        const result = subsetEvolutionInternal(
+        const result = await subsetEvolutionInternal(
             example.document,
             example.label,
             Array.isArray(example.target)
@@ -550,6 +643,7 @@ export async function subsetEvolution(options: ISelectorLoomOptions): Promise<IS
                 : [example.target],
             options.maxRecursion ?? 100,
             excludedMarkers,
+            !options.inclusions || Array.isArray(options.inclusions) ? options.inclusions : [options.inclusions],
             !options.exclusions || Array.isArray(options.exclusions) ? options.exclusions : [options.exclusions]);
 
         if (!result)

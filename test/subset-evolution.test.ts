@@ -114,5 +114,39 @@ describe("#subsetEvolution", () => {
 
         expect(result).not.toBeNull();
         expect(result?.selector).toBe("#pageContent section > div:has(#description) + div div > span");
+    });   
+
+    it("examples-02/14759.html (inclusions:0.50)", async () => {
+        // load the examples and targets
+
+        const examples = await loadExamples("./test/data/examples-02", file => file === "14759.html");
+        const result = await subsetEvolution({
+            examples,
+            inclusions: [
+                {
+                    requiredWordsRatio: 0.50
+                }
+            ]
+        });
+
+        expect(result).not.toBeNull();
+        expect(result?.selector).toBe("#tabContent-tab-Details .styles__Bullet-sc-6aebpn-0 > span");
+    });    
+    
+    it("examples-02/14759.html (inclusions:0.67)", async () => {
+        // load the examples and targets
+
+        const examples = await loadExamples("./test/data/examples-02", file => file === "14759.html");
+        const result = await subsetEvolution({
+            examples,
+            inclusions: [
+                {
+                    requiredWordsRatio: 0.67
+                }
+            ]
+        });
+
+        expect(result).not.toBeNull();
+        expect(result?.selector).toBe("#tabContent-tab-Details li > span");
     });    
 })
