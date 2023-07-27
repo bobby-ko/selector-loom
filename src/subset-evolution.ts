@@ -1,12 +1,16 @@
 import bs from "binary-search";
 import jquery from "jquery";
-import natural, { DataRecord } from "natural";
+import natural from "natural";
+import { differenceInSeconds } from "date-fns";
+import { readFile, writeFile } from "fs/promises";
+import pLimit from "p-limit";
+
 const { WordTokenizer, WordNet, NounInflector } = natural;
 import _, { CollectionChain } from 'lodash';
-const { chain, cloneDeep, last, orderBy } = _;
+const { chain, cloneDeep, last, orderBy, takeWhile } = _;
 
 import { IElementMarker, IElementVolume, IInternalSelector, ISelector, IWeighted, MarkerType } from "./models.js";
-import { ISelectorLoomOptions, IExclusionFilter, IInclusionFilter } from "./selector-loom-options.js";
+import { ISelectorLoomOptions, IExclusionFilter, IInclusionFilter, IExample } from "./selector-loom-options.js";
 
 const excludedAttributes = orderBy([
     "alt",
@@ -31,7 +35,13 @@ const excludedAttributes = orderBy([
 
 const excludedWords = [
     "the"
-]
+];
+
+let words: Record<string, boolean> | undefined;
+
+let wordsUpdated = false;
+let wordsLastSaved: Date | undefined;
+const loadWordsQueue = pLimit(1);
 
 const tokenizer = new WordTokenizer();
 const nounInflector = new NounInflector();
@@ -49,6 +59,72 @@ interface ICombinationSpaceMutation {
     matches: NodeListOf<Element>,
     mutationDepthDelta: number,
     mutationMarker: IElementMarker
+}
+
+interface IAnchor {
+    element: HTMLElement;
+    depthDelta: number;
+}
+
+async function isWord(token: string, cache: Boolean = true): Promise<boolean> {
+    if (token.length < 3)
+        return false;
+
+    if (!words) {
+        await loadWordsQueue(async () => {
+            if (!words)
+                try {
+                    words = process.env.SELECTOR_LOOM_TMP
+                        ? JSON.parse((await readFile(`${process.env.SELECTOR_LOOM_TMP}/subset-evolution-words.json`)).toString())
+                        : {}
+                }
+                catch (err) {
+                    words = {};
+                }
+        });
+    }
+
+    const _token = token.toLowerCase();
+    let result = (words as Record<string, boolean>)[_token];
+    if (result !== undefined)
+        return result;
+
+    result = await new Promise((accept, reject) =>
+        wordnet.lookup(_token, results => {
+            if (results.length > 0)
+                accept(true);
+            else
+                // try to singularize it - sometimes that results in better lookups for some words
+                wordnet.lookup(nounInflector.singularize(_token), results => accept(results.length > 0));
+        }));
+
+    // console.assert(typeof result === "boolean");
+
+    if (!result && _token.length >= 6) {
+        // It's possible the token is multiple valid words
+        // Try to take make sense of it
+        for (let chunkSize = 3; chunkSize <= _token.length - 3; chunkSize++) {
+            const chunk = _token.substring(0, chunkSize);
+            const chunkIsWord = await isWord(chunk, false);
+
+            if (chunkIsWord) {
+                const reminderAreWords = await isWord(_token.substring(chunkSize), false);
+
+                if (reminderAreWords) {
+                    result = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    // this condition is to prevent caching of chuncks from the process of trying to parse out concatenated words
+    if (cache) {
+        (words as Record<string, boolean>)[_token] = result;
+        wordsUpdated = true;
+    }
+
+    return result;
 }
 
 async function getWordRatio(value: string, explicitInclusions: IInclusionFilter[]): Promise<number> {
@@ -92,16 +168,8 @@ async function getWordRatio(value: string, explicitInclusions: IInclusionFilter[
     const wordTokens: string[] = [];
     await Promise.all(tokens
         .map(async word => {
-            const result: DataRecord[] = await new Promise((accept, reject) =>
-                wordnet.lookup(word, results => {
-                    if (results.length > 0)
-                        accept(results);
-                    else
-                        // try to singularize it - sometimes that results in better lookups for some words
-                        wordnet.lookup(nounInflector.singularize(word), results => accept(results));
-                }));
-
-            if (result.length >= 1)
+            const _isWord = await isWord(word);
+            if (_isWord)
                 wordTokens.push(word);
         }));
 
@@ -120,7 +188,7 @@ async function isIncluded(value: string, explicitInclusions?: IInclusionFilter[]
     return true;
 }
 
-async function closestParentWithId(body: HTMLElement, target: HTMLElement, idExplicitInclusions?: IInclusionFilter[]): Promise<{ element: HTMLElement, depthDelta: number }> {
+async function closestParentWithId(body: HTMLElement, target: HTMLElement, idExplicitInclusions?: IInclusionFilter[]): Promise<IAnchor> {
     let closestParentWithId = target;
     let depthDelta = 0;
     while (closestParentWithId !== body
@@ -218,7 +286,7 @@ function topMarker(element: HTMLElement, classDistribution: Record<string, numbe
                 && excludedMarker.item === marker.item) !== true
 
             && userExclusions?.some(userExclusion =>
-                (!userExclusion.elements || userExclusion.elements === element)
+                (!userExclusion.element || (userExclusion.element as HTMLElement[]).includes(element))
                 && (!userExclusion.type || userExclusion.type === marker.type)
                 && ((userExclusion.value instanceof String && userExclusion.value === marker.item)
                     || userExclusion.value instanceof RegExp && userExclusion.value.test(marker.item))) !== true)
@@ -317,14 +385,14 @@ function anchorSelector(idElement: HTMLElement, anchorElement: HTMLElement, labe
     return anchorSelector;
 }
 
-async function subsetEvolutionInternal(document: Document, label: HTMLElement | undefined, targets: HTMLElement[], maxRecursion: number, excludedMarkers: IElementMarker[], userInclusions?: IInclusionFilter[], userExclusions?: IExclusionFilter[]): Promise<IInternalSelector | null> {
+async function subsetEvolutionInternal(document: Document, label: "auto" | HTMLElement | undefined, targets: HTMLElement[], maxRecursion: number, excludedMarkers: IElementMarker[], userInclusions?: IInclusionFilter[], userExclusions?: IExclusionFilter[]): Promise<IInternalSelector | null> {
     if (!document)
         throw new Error(`document is required`);
 
     if (!targets?.length)
         throw new Error(`At least one target is required`);
 
-    if (label && (label.textContent?.trim() ?? "") === "")
+    if (label && label !== "auto" && (label.textContent?.trim() ?? "") === "")
         throw new Error(`Label needs to contain text`);
 
     if (targets.every(target => target.id !== undefined && target.id !== null && target.id.trim() !== ""))
@@ -337,7 +405,7 @@ async function subsetEvolutionInternal(document: Document, label: HTMLElement | 
         };
 
     const allAnchors = await Promise.all(targets
-        .concat(label ? [label] : [])
+        .concat(label && label !== "auto" ? [label] : [])
         .map(target => closestParentWithId(
             document.body,
             target,
@@ -362,44 +430,49 @@ async function subsetEvolutionInternal(document: Document, label: HTMLElement | 
             };
         })();
 
-    let anchorParent!: {
-        element: HTMLElement;
-        depthDelta: number;
-    };
+    let anchorParent: IAnchor | undefined;
 
-    if (!label)
-        anchorParent = idParent
-    else {
-        let commonParent = label.parentElement;
-        let depthDelta = 1;
-        while (commonParent) {
-            if (targets.every(target => isParent(target, commonParent as HTMLElement)))
-                break;
-
-            commonParent = commonParent.parentElement;
-            depthDelta++;
-        }
-
-        if (commonParent === idParent.element)
-            anchorParent = idParent
-        else {
-            if (!commonParent)
-                throw new Error("Could not find common parent for label and target(s)");
-
-            if (!isParent(commonParent, idParent.element))
-                throw new Error("Common parent between label and target(s) is expected to be under idParent");
-
-            anchorParent = {
-                element: commonParent,
-                depthDelta
-            }
-        }
-    }
+    const classListImplicitInclusions = userInclusions?.filter(inclusion => inclusion.type === MarkerType.class || !inclusion.type);
+    const attributeValueImplicitInclusions = userInclusions?.filter(inclusion => inclusion.type === MarkerType.attribute || !inclusion.type);
 
     let retry = false;
     let strategy = Strategy.AnchorAsCommonParent;
     do {
         retry = false;
+
+        if (!anchorParent) {
+            if (!label || label === "auto")
+                anchorParent = idParent
+            else {
+                let commonParent = (label as HTMLElement).parentElement;
+                let depthDelta = 1;
+                while (commonParent) {
+                    if (targets.every(target => isParent(target, commonParent as HTMLElement)))
+                        break;
+
+                    commonParent = commonParent.parentElement;
+                    depthDelta++;
+                }
+
+                if (commonParent === idParent.element)
+                    anchorParent = idParent
+                else {
+                    if (!commonParent)
+                        throw new Error("Could not find common parent for label and target(s)");
+
+                    if (!isParent(commonParent, idParent.element))
+                        throw new Error("Common parent between label and target(s) is expected to be under idParent");
+
+                    anchorParent = {
+                        element: commonParent,
+                        depthDelta
+                    }
+                }
+            }
+        }
+
+        if (!anchorParent)
+            throw new Error("Failed to identify anchor element");
 
         const classDistribution: Record<string, number> = {};
         const attributeDistribution: Record<string, number> = {};
@@ -407,13 +480,11 @@ async function subsetEvolutionInternal(document: Document, label: HTMLElement | 
 
         const elements = anchorParent.element.querySelectorAll("*");
         const distanceWeightReductionFactor = 1.0 / anchorParent.depthDelta;
-        const classListImplicitInclusions = userInclusions?.filter(inclusion => inclusion.type === MarkerType.class || !inclusion.type);
-        const attributeValueImplicitInclusions = userInclusions?.filter(inclusion => inclusion.type === MarkerType.attribute || !inclusion.type);
 
         for (const element of elements) {
             for (const className of element.classList) {
                 if (userExclusions?.some(exclusion =>
-                    (!exclusion.elements || exclusion.elements === element)
+                    (!exclusion.element || (exclusion.element as HTMLElement[]).includes(element as HTMLElement))
                     && (!exclusion.type || exclusion.type === MarkerType.class)
                     && (exclusion.value === undefined || exclusion.value === className))
                     || !await isIncluded(className, classListImplicitInclusions))
@@ -430,7 +501,7 @@ async function subsetEvolutionInternal(document: Document, label: HTMLElement | 
                     continue;
 
                 if (userExclusions?.some(exclusion =>
-                    (!exclusion.elements || exclusion.elements === element)
+                    (!exclusion.element || (exclusion.element as HTMLElement[]).includes(element as HTMLElement))
                     && (!exclusion.type || exclusion.type === MarkerType.attribute)
                     && (exclusion.value === undefined || exclusion.value === attributeName))
                     || !await isIncluded(attribute.value, attributeValueImplicitInclusions))
@@ -442,7 +513,7 @@ async function subsetEvolutionInternal(document: Document, label: HTMLElement | 
             }
 
             if (userExclusions?.some(exclusion =>
-                (!exclusion.elements || exclusion.elements === element)
+                (!exclusion.element || (exclusion.element as HTMLElement[]).includes(element as HTMLElement))
                 && (!exclusion.type || exclusion.type === MarkerType.tag)
                 && (exclusion.value === undefined || exclusion.value === element.tagName)))
                 continue;
@@ -462,16 +533,17 @@ async function subsetEvolutionInternal(document: Document, label: HTMLElement | 
         let mutationMarker: IElementMarker | undefined;
         excludedMarkers = excludedMarkers ?? [];
 
+        // mutation loop
         do {
             const selectorCandidate = selector(combinationSpace);
-            const validationResult = validateSelector(selectorCandidate, anchorParent.element, targets);
+            const validationResult = validateSelector(selectorCandidate, (anchorParent as IAnchor).element, targets);
 
             if (validationResult.valid) {
 
                 const anchorSelectorVal = anchorSelector(
                     idParent.element,
-                    anchorParent.element,
-                    label,
+                    (anchorParent as IAnchor).element,
+                    label !== "auto" ? label : undefined,
                     strategy);
 
                 return {
@@ -531,7 +603,7 @@ async function subsetEvolutionInternal(document: Document, label: HTMLElement | 
 
                         const mutatedCombinationSpace = combinationSpace.map(eVol => eVol === elementVolume ? mutatedElementVolume : eVol);
                         const mutatedSelectorCandidate = selector(combinationSpace);
-                        const matches = anchorParent.element.querySelectorAll(mutatedSelectorCandidate);
+                        const matches = (anchorParent as IAnchor).element.querySelectorAll(mutatedSelectorCandidate);
 
                         return {
                             combinationSpace: mutatedCombinationSpace,
@@ -554,7 +626,7 @@ async function subsetEvolutionInternal(document: Document, label: HTMLElement | 
                 .concat((() => {
                     const lastCombinationSpace = last(combinationSpace) as IElementVolume;
                     const nextParentElement = lastCombinationSpace.element.parentElement as HTMLElement;
-                    if (nextParentElement === anchorParent.element)
+                    if (nextParentElement === (anchorParent as IAnchor).element)
                         return [];
 
                     const depthDelta = lastCombinationSpace.depthDelta + 1;
@@ -569,7 +641,7 @@ async function subsetEvolutionInternal(document: Document, label: HTMLElement | 
                     const mutatedCombinationSpace = combinationSpace.concat(newElementVolume);
 
                     const mutatedSelectorCandidate = selector(combinationSpace);
-                    const matches = anchorParent.element.querySelectorAll(mutatedSelectorCandidate);
+                    const matches = (anchorParent as IAnchor).element.querySelectorAll(mutatedSelectorCandidate);
 
                     return [{
                         combinationSpace: mutatedCombinationSpace,
@@ -598,11 +670,23 @@ async function subsetEvolutionInternal(document: Document, label: HTMLElement | 
 
                 .value();
 
-            // cant 
+            // could not find a solution 
             if (!mutation) {
-                if (label && strategy === Strategy.AnchorAsCommonParent) {
+                if (label === "auto") {
+                    label = await findLabel(
+                        (anchorParent as IAnchor).element,
+                        targets,
+                        userInclusions?.filter(inclusion => !inclusion.type || inclusion.type === MarkerType.id),
+                        userExclusions?.filter(exclusion => !exclusion.type || exclusion.type === MarkerType.id));
+
+                    if (label) {
+                        anchorParent = undefined;
+                        retry = true;
+                    }
+                }
+                else if (label && strategy === Strategy.AnchorAsCommonParent) {
                     strategy = Strategy.LabelTargetNeighboringParents;
-                    const newAnchorParentElement = [...anchorParent.element.children]
+                    const newAnchorParentElement = [...(anchorParent as IAnchor).element.children]
                         .find(closerParent => targets.every(target => isParent(target, closerParent as HTMLElement))) as HTMLElement | undefined;
 
                     if (!newAnchorParentElement)
@@ -610,12 +694,12 @@ async function subsetEvolutionInternal(document: Document, label: HTMLElement | 
 
                     anchorParent = {
                         element: newAnchorParentElement,
-                        depthDelta: anchorParent.depthDelta - 1
+                        depthDelta: (anchorParent as IAnchor).depthDelta - 1
                     };
                     retry = true;
                 }
 
-                break;
+                break;  // out of the mutation loop
             }
 
             lastCombinationSpace = combinationSpace;
@@ -629,69 +713,176 @@ async function subsetEvolutionInternal(document: Document, label: HTMLElement | 
     return null;
 }
 
-export async function subsetEvolution(options: ISelectorLoomOptions): Promise<ISelector | null> {
+async function saveWords() {
+    try {
+        if (process.env.SELECTOR_LOOM_TMP && wordsUpdated) {
+            const now = new Date();
 
-    const results: IInternalSelector[] = [];
-    const excludedMarkers: IElementMarker[] = [];
-
-    for await (const example of options.examples) {
-        const result = await subsetEvolutionInternal(
-            example.document,
-            example.label,
-            Array.isArray(example.target)
-                ? example.target
-                : [example.target],
-            options.maxRecursion ?? 100,
-            excludedMarkers,
-            !options.inclusions || Array.isArray(options.inclusions) ? options.inclusions : [options.inclusions],
-            !options.exclusions || Array.isArray(options.exclusions) ? options.exclusions : [options.exclusions]);
-
-        if (!result)
-            return null;
-
-        results.push(result);
-    }
-
-    const groups = chain(results)
-        .groupBy(result => result?.selector)
-        .orderBy(group => group.length, "desc")
-        .value();
-
-    if (groups.length > 1) {
-        // Multiple versions of selectors were generated. Try to reconcile - start with the most common one and see if it would work for the rest of the examples which resulted in different selectors
-        for (const currentGroup of groups) {
-            const selectorCandidate = currentGroup[0]?.selector as string;
-            if (chain(groups)
-                .filter(group => group !== currentGroup)
-                .flatten()
-                .every(internalSelector =>
-                    validateSelector(
-                        selectorCandidate,
-                        internalSelector.example.document.body,
-                        Array.isArray(internalSelector.example.target)
-                            ? internalSelector.example.target
-                            : [internalSelector.example.target])
-                        .valid)
-                .value()) {
-                return {
-                    selector: selectorCandidate,
-                    logs: (currentGroup[0]?.logs ?? [])
-                        .concat({
-                            "info": `Example set resulted in ${groups.length} selector versions. A common version was found and successfully validated across the full set.`,
-                            "details": groups
-                                .map(group => ({
-                                    selector: group[0].selector,
-                                    count: group.length,
-                                    examples: group.map(selector => selector.example)
-                                }))
-                        })
-                }
+            if (!wordsLastSaved
+                || differenceInSeconds(now, wordsLastSaved) > 10) {
+                wordsUpdated = false;
+                await writeFile(`${process.env.SELECTOR_LOOM_TMP}/subset-evolution-words.json`, JSON.stringify(words, null, " "));
+                wordsLastSaved = now;
             }
         }
     }
+    catch (err: any) {
+        console.error(`error while saving words to temp: ${err.message}`);
+    }
+}
 
-    return {
-        selector: results[0].selector,
-        logs: results[0].logs
-    };
+async function traverseForId(elements: HTMLElement[], idExplicitInclusions?: IInclusionFilter[], idExplicitExclusions?: IExclusionFilter[]): Promise<HTMLElement | undefined> {
+    for (const element of elements) {
+        if ((element.id?.length ?? 0) > 0
+            && await isIncluded(element.id, idExplicitInclusions)
+            && !idExplicitExclusions?.some(exclusion =>
+                (!exclusion.type || exclusion.type === MarkerType.id)
+                && (!exclusion.element || (exclusion.element as HTMLElement[]).includes(element)
+                    && ((exclusion.value instanceof String && exclusion.value === element.id)
+                        || exclusion.value instanceof RegExp && exclusion.value.test(element.id)))))
+
+            return element;
+
+        if (element.childElementCount) {
+            const result = await traverseForId([...element.children as any], idExplicitInclusions, idExplicitExclusions);
+            if (result)
+                return result;
+        }
+    }
+}
+
+async function findLabel(topAnchor: HTMLElement, targets: HTMLElement[], idExplicitInclusions?: IInclusionFilter[], idExplicitExclusions?: IExclusionFilter[]): Promise<HTMLElement | undefined> {
+    let anchor = chain(targets)
+        .minBy(target => target.parentElement?.children
+            ? [...target.parentElement?.children ?? null].indexOf(target)
+            : Number.MAX_VALUE)
+        .value();
+
+    // try to find label with id first, those would make for stronger selector
+    while (anchor != topAnchor) {
+        const previousSibling = anchor.previousElementSibling as HTMLElement;
+
+        let result: HTMLElement | undefined;
+
+        // first try with the previous element
+        if (previousSibling) {
+            result = await traverseForId([previousSibling], idExplicitInclusions, idExplicitExclusions);
+
+            if (result)
+                return result;
+        }
+
+        const stopAtElement = anchor;
+        anchor = anchor.parentElement as HTMLElement;
+        const precedingSiblings = takeWhile(anchor.children, child => child !== stopAtElement) as HTMLElement[];
+
+        if (precedingSiblings?.length)
+            result = await traverseForId(
+                precedingSiblings,
+                idExplicitInclusions,
+                idExplicitExclusions);
+
+        if (result)
+            return result;
+    }
+}
+
+export async function subsetEvolution(options: ISelectorLoomOptions): Promise<ISelector | null> {
+
+    try {
+        const results: IInternalSelector[] = [];
+        const excludedMarkers: IElementMarker[] = [];
+
+        let processed = 0;
+
+        if (!Array.isArray(options.examples))
+            throw new Error("AsyncIterableIterator type example source is not supported yet");
+
+        if (options.inclusions && !Array.isArray(options.inclusions))
+            options.inclusions = [options.inclusions];
+
+        if (options.exclusions && !Array.isArray(options.exclusions)) {
+            options.exclusions = [options.exclusions];
+            if (options.exclusions.some(exclusion => exclusion.element && !Array.isArray(exclusion.element)))
+                for (const exclusion of options.exclusions)
+                    if (exclusion.element && !Array.isArray(exclusion.element))
+                        exclusion.element = [exclusion.element];
+        }
+
+        for (const example of options.examples) {
+            const result = await subsetEvolutionInternal(
+                example.document,
+                example.label,
+                Array.isArray(example.target)
+                    ? example.target
+                    : [example.target],
+                options.maxRecursion ?? 100,
+                excludedMarkers,
+                options.inclusions,
+                options.exclusions);
+
+            if (!result) {
+                return {
+                    logs: [{
+                        "warn": `Failed to generate selector for example`,
+                        example
+                    }]
+                };
+            }
+
+            results.push(result);
+
+            if (options.progress)
+                await options.progress(++processed);
+        }
+
+        const groups = chain(results)
+            .groupBy(result => result?.selector)
+            .orderBy(group => group.length, "desc")
+            .value();
+
+        if (groups.length > 1) {
+            // Multiple versions of selectors were generated. Try to reconcile - start with the most common one and see if it would work for the rest of the examples which resulted in different selectors
+            for (const currentGroup of groups) {
+                const selectorCandidate = currentGroup[0]?.selector as string;
+                if (chain(groups)
+                    .filter(group => group !== currentGroup)
+                    .flatten()
+                    .every(internalSelector =>
+                        validateSelector(
+                            selectorCandidate,
+                            internalSelector.example.document.body,
+                            Array.isArray(internalSelector.example.target)
+                                ? internalSelector.example.target
+                                : [internalSelector.example.target])
+                            .valid)
+                    .value()) {
+                    return {
+                        selector: selectorCandidate,
+                        logs: (currentGroup[0]?.logs ?? [])
+                            .concat({
+                                "info": `Example set resulted in ${groups.length} selector versions. A common version was found and successfully validated across the full set.`,
+                                "details": groups
+                                    .map(group => ({
+                                        selector: group[0].selector,
+                                        count: group.length,
+                                        examples: group.map(selector => selector.example)
+                                    }))
+                            })
+                    }
+                }
+            }
+        }
+
+        return {
+            selector: results[0].selector,
+            logs: results[0].logs
+        };
+    }
+    finally {
+        if (process.env.NODE_ENV === 'test')
+            await saveWords();
+        else
+            queueMicrotask(saveWords);
+    }
 }

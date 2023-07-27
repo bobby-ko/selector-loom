@@ -89,33 +89,6 @@ describe("#subsetEvolution", () => {
         expect(result?.selector).toBe("#tabContent-tab-Details .styles__Bullet-sc-6aebpn-0 > span");
     });
 
-    it("examples-03/21882617.html", async () => {
-        // load the examples and targets
-
-        const examples = await loadExamples("./test/data/examples-03", file => file === "21882617.html");
-        const result = await subsetEvolution({
-            examples
-        });
-
-        expect(result).not.toBeNull();
-        expect(result?.selector).toBe("#pageContent section > div:has(#description) + div .sc-13r1zam-0 > span");
-    });
-
-    it("examples-03/21882617.html (no-class)", async () => {
-        // load the examples and targets
-
-        const examples = await loadExamples("./test/data/examples-03", file => file === "21882617.html");
-        const result = await subsetEvolution({
-            examples,
-            exclusions: {
-                type: MarkerType.class
-            }
-        });
-
-        expect(result).not.toBeNull();
-        expect(result?.selector).toBe("#pageContent section > div:has(#description) + div div > span");
-    });   
-
     it("examples-02/14759.html (inclusions:0.50)", async () => {
         // load the examples and targets
 
@@ -148,5 +121,67 @@ describe("#subsetEvolution", () => {
 
         expect(result).not.toBeNull();
         expect(result?.selector).toBe("#tabContent-tab-Details li > span");
-    });    
+    });        
+
+    it("examples-03/21882617.html", async () => {
+        // load the examples and targets
+
+        const examples = await loadExamples("./test/data/examples-03", file => file === "21882617.html");
+        const result = await subsetEvolution({
+            examples
+        });
+
+        expect(result).not.toBeNull();
+        expect(result?.selector).toBe("#pageContent section > div:has(#description) + div .sc-13r1zam-0 > span");
+    });
+
+    it("examples-03/21882617.html (no-class)", async () => {
+        // load the examples and targets
+
+        const examples = await loadExamples("./test/data/examples-03", file => file === "21882617.html");
+        const result = await subsetEvolution({
+            examples,
+            exclusions: {
+                type: MarkerType.class
+            }
+        });
+
+        expect(result).not.toBeNull();
+        expect(result?.selector).toBe("#pageContent section > div:has(#description) + div div > span");
+    });
+
+    it("examples-03/21882617.html (0.67; auto label)", async () => {
+        // load the examples and targets
+
+        const examples = await loadExamples("./test/data/examples-03", file => file === "21882617.html");
+        examples[0].label = "auto";
+        const result = await subsetEvolution({
+            examples,
+            inclusions: {
+                requiredWordsRatio: 0.67
+            }
+        });
+
+        expect(result).not.toBeNull();
+        expect(result?.selector).toBe("#pageContent section > div:has(#description) + div div > span");
+    });
+
+
+    it("examples-04/00087692008040.html (inclusions:0.67)", async () => {
+        // load the examples and targets
+
+        const examples = await loadExamples("./test/data/examples-04", file => file === "00087692008040.html");
+        const result = await subsetEvolution({
+            examples,
+            inclusions: [
+                {
+                    requiredWordsRatio: 0.67
+                }
+            ]
+        });
+
+        expect(result).not.toBeNull();
+        expect(result?.selector).toBe("#tabContent-tab-Details li > span");
+    });        
+
 })

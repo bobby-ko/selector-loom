@@ -2,7 +2,7 @@ import { MarkerType } from "./models.js"
 
 export interface IExample {
     document: Document,
-    label?: HTMLElement,
+    label?: "auto" | HTMLElement,
     target: HTMLElement | HTMLElement[]
 
     /** User metadata/reference records. These are not intended to by the algorithm, but rather for tracing & debugging purposes */
@@ -10,7 +10,7 @@ export interface IExample {
 }
 
 export interface IExclusionFilter {
-    elements?: Element,
+    element?: HTMLElement | HTMLElement[],
     type?: MarkerType,
     value?: string | RegExp
 }
@@ -52,5 +52,7 @@ export interface ISelectorLoomOptions {
      * - (exclude) "all class names that begin with 'cz-'" 
      * - (exclude) "attribute "data-custom" for specific element X"
      * */
-    exclusions?: IExclusionFilter | IExclusionFilter[]
+    exclusions?: IExclusionFilter | IExclusionFilter[],
+
+    progress?: (processed: number) => Promise<void> | void
 }

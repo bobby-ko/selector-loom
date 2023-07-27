@@ -5,6 +5,9 @@ export default defineConfig({
         coverage: {
             reporter: ["text", "html"]
         },
-        testTimeout: -1
+        testTimeout: -1,
+        env: {
+            "SELECTOR_LOOM_TMP": "./tmp"
+        }
     }
 })

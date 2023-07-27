@@ -29,7 +29,7 @@ export interface IElementMarker extends IMarker {
 }
 
 export interface ISelector {
-    selector: string,
+    selector?: string,
     logs?: Record<string, any>[]
 }
 

@@ -87,5 +87,53 @@ describe("#selectorLoom", () => {
             const content = ($ as any)(result?.selector)[0].textContent as string;
             expect(content).match(/[0-9,]+/);
         };
-    });    
+    });
+
+    it("npm-project-page (label, 0.67)", async () => {
+        
+        // scrape some NPM product pages
+        const examples = await Promise.all(npmProjectPages
+            .map(async npmProjectPage => {
+                
+                const pageResponse = await axios(npmProjectPage);
+                const window = (new JSDOM(pageResponse.data)).window;
+                const document = window.document;
+
+                return {
+                    document,
+                    label: document.evaluate(
+                        '//*[@id="top"]/div[3]/div[3]/div/h3/text()',          // "Weekly Downloads" label
+                        document,
+                        null,
+                        window.XPathResult.FIRST_ORDERED_NODE_TYPE)
+                        .singleNodeValue as HTMLElement,
+                    target:
+                        document.evaluate(
+                            '//*[@id="top"]/div[3]/div[3]/div/div/p',       // downloads number
+                            document,
+                            null,
+                            window.XPathResult.FIRST_ORDERED_NODE_TYPE)
+                            .singleNodeValue as HTMLElement
+                };
+            }));
+
+        const result = await selectorLoom({
+            examples,
+            inclusions: {
+                requiredWordsRatio: 0.67
+            }
+        });
+
+        // console.info(result?.selector);
+        // #top div > div:has(h3:contains('Weekly Downloads')) p
+
+        expect(result).not.toBeNull();
+
+        for (const example of examples)
+        {
+            const $ = jquery(example.document.defaultView as Window);
+            const content = ($ as any)(result?.selector)[0].textContent as string;
+            expect(content).match(/[0-9,]+/);
+        };
+    });      
 });
