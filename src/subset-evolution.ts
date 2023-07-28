@@ -32,14 +32,21 @@ const excludedAttributes = orderBy([
     "muted",
     "preload",
     "width",
-    "font-family"
+    "font-family",
+    "preserveAspectRatio",
+    "transform",
+    "opacity",
+
 ]) as readonly string[];
 
 const excludedWords = [
     "the"
 ];
 
+const excludedTags = ["svg", "iframe"];
+
 let words: Record<string, boolean> | undefined;
+let chunks: Record<string, boolean> = {};
 
 let wordsUpdated = false;
 let wordsLastSaved: Date | undefined;
@@ -101,6 +108,10 @@ async function isWord(token: string, cache: Boolean = true): Promise<boolean> {
     if (result !== undefined)
         return result;
 
+    result = chunks[_token];
+    if (result !== undefined)
+        return result;
+
     const hasVowels = /[aeiouy]/i.test(token);
 
     if (hasVowels)
@@ -140,7 +151,10 @@ async function isWord(token: string, cache: Boolean = true): Promise<boolean> {
     if (cache) {
         (words as Record<string, boolean>)[_token] = result;
         wordsUpdated = true;
+        chunks = {};
     }
+    else
+        chunks[_token] = result;
 
     return result;
 }
@@ -417,6 +431,21 @@ function anchorSelector(idElement: HTMLElement, anchorElement: HTMLElement, labe
     return anchorSelector;
 }
 
+function hasParentOfTag(element: HTMLElement, tagNames: string[], stopAtParent: HTMLElement)
+{
+    let parent = element.parentElement;
+
+    while (parent && parent != stopAtParent)
+    {
+        if (tagNames.includes(parent.tagName))
+            return true;
+            
+        parent = parent.parentElement
+    }
+
+    return false;
+}
+
 async function subsetEvolutionInternal(document: Document, label: "auto" | HTMLElement | undefined, targets: HTMLElement[], maxRecursion: number, excludedMarkers: IElementMarker[], userInclusions?: IInclusionFilter[], userExclusions?: IExclusionFilter[]): Promise<IInternalSelector | null> {
     if (!document)
         throw new Error(`document is required`);
@@ -510,10 +539,14 @@ async function subsetEvolutionInternal(document: Document, label: "auto" | HTMLE
         const attributeDistribution: Record<string, number> = {};
         const tagDistribution: Record<string, number> = {};
 
-        const elements = anchorParent.element.querySelectorAll("*");
+        const elements = anchorParent.element.querySelectorAll("*:not(svg):not(img):not(noscript):not(script):not(iframe)");
         const distanceWeightReductionFactor = 1.0 / anchorParent.depthDelta;
 
         for (const element of elements) {
+            // exclude all nested elements in <svg> or <iframe>
+            if (hasParentOfTag(element as HTMLElement, excludedTags, anchorParent.element))
+                continue;
+
             for (const className of element.classList) {
                 if (userExclusions?.some(exclusion =>
                     (!exclusion.element || (exclusion.element as HTMLElement[]).includes(element as HTMLElement))
@@ -833,6 +866,7 @@ export async function subsetEvolution(options: ISelectorLoomOptions): Promise<IS
     try {
         const results: IInternalSelector[] = [];
         const excludedMarkers: IElementMarker[] = [];
+        let failureCount = 0;
 
         let processed = 0;
 
@@ -863,15 +897,18 @@ export async function subsetEvolution(options: ISelectorLoomOptions): Promise<IS
                 options.exclusions);
 
             if (!result) {
-                return {
-                    logs: [{
-                        "warn": `Failed to generate selector for example`,
-                        example
-                    }]
-                };
-            }
+                failureCount++;
 
-            results.push(result);
+                if ( (failureCount / options.examples.length) > (options.examplesFailureTolerance ?? 0) )
+                    return {
+                        logs: [{
+                            "warn": `Failed to generate selector for example`,
+                            example
+                        }]
+                    };
+            }
+            else
+                results.push(result);
 
             if (options.progress)
                 await options.progress(++processed);

@@ -43,6 +43,10 @@ export interface ISelectorLoomOptions {
 
     examples: IExample[] | AsyncIterableIterator<IExample>,
 
+    /** Specifies acceptable examples selector generation failure. Value is fraction between 0 and 1. 
+     * Default is 0 which means all examples need to successfully generate a selector to consider, otherwise the whole operation is considered a failure */
+    examplesFailureTolerance?: number,
+
     maxRecursion?: number,
 
     /** If set, restricts classNames and/or attribute values only to the ones that are composed of number of english words that make up a certain ratio of the total selector */
