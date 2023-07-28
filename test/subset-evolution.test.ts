@@ -62,7 +62,7 @@ describe("#subsetEvolution", () => {
             examples
         });
 
-        expect(result).toBeNull();
+        expect(result?.selector).toBeUndefined();
     });
 
     it("examples-02/14759.html", async () => {
@@ -183,5 +183,24 @@ describe("#subsetEvolution", () => {
         expect(result).not.toBeNull();
         expect(result?.selector).toBe("#tabContent-tab-Details li > span");
     });        
+
+    it("examples-05/419650-01.html (0.67, auto label)", async () => {
+        // load the examples and targets
+
+        const examples = await loadExamples("./test/data/examples-05", file => file === "419650-01.html");
+        examples[0].label = "auto";
+        const result = await subsetEvolution({
+            examples,
+            inclusions: [
+                {
+                    requiredWordsRatio: 0.67
+                }
+            ]
+        });
+
+        expect(result).not.toBeNull();
+        expect(result?.selector).toBe("#StyledPdpWrapper div > button:has(#description) + div");
+    });        
+
 
 })

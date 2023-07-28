@@ -4,13 +4,14 @@ import natural from "natural";
 import { differenceInSeconds } from "date-fns";
 import { readFile, writeFile } from "fs/promises";
 import pLimit from "p-limit";
+import NodeCache from "node-cache";
 
 const { WordTokenizer, WordNet, NounInflector } = natural;
 import _, { CollectionChain } from 'lodash';
 const { chain, cloneDeep, last, orderBy, takeWhile } = _;
 
 import { IElementMarker, IElementVolume, IInternalSelector, ISelector, IWeighted, MarkerType } from "./models.js";
-import { ISelectorLoomOptions, IExclusionFilter, IInclusionFilter, IExample } from "./selector-loom-options.js";
+import { ISelectorLoomOptions, IExclusionFilter, IInclusionFilter } from "./selector-loom-options.js";
 
 const excludedAttributes = orderBy([
     "alt",
@@ -30,7 +31,8 @@ const excludedAttributes = orderBy([
     "loading",
     "muted",
     "preload",
-    "width"
+    "width",
+    "font-family"
 ]) as readonly string[];
 
 const excludedWords = [
@@ -46,6 +48,13 @@ const loadWordsQueue = pLimit(1);
 const tokenizer = new WordTokenizer();
 const nounInflector = new NounInflector();
 const wordnet = new WordNet();
+
+const computeWordRatioQueue = pLimit(1);
+const wordRatioCache = new NodeCache({
+    stdTTL: 600,
+    checkperiod: 60,
+    useClones: false,
+})
 
 // const wordnetLookup
 
@@ -67,6 +76,9 @@ interface IAnchor {
 }
 
 async function isWord(token: string, cache: Boolean = true): Promise<boolean> {
+    // take some shortcuts first to reduce compute on words lookup
+
+    // if a token is less than 3 char don't consider it a proper word
     if (token.length < 3)
         return false;
 
@@ -89,18 +101,24 @@ async function isWord(token: string, cache: Boolean = true): Promise<boolean> {
     if (result !== undefined)
         return result;
 
-    result = await new Promise((accept, reject) =>
-        wordnet.lookup(_token, results => {
-            if (results.length > 0)
-                accept(true);
-            else
-                // try to singularize it - sometimes that results in better lookups for some words
-                wordnet.lookup(nounInflector.singularize(_token), results => accept(results.length > 0));
-        }));
+    const hasVowels = /[aeiouy]/i.test(token);
+
+    if (hasVowels)
+        result = await new Promise((accept, reject) =>
+            wordnet.lookup(_token, results => {
+                if (results.length > 0)
+                    accept(true);
+                else
+                    // try to singularize it - sometimes that results in better lookups for some words
+                    wordnet.lookup(nounInflector.singularize(_token), results => accept(results.length > 0));
+            }));
 
     // console.assert(typeof result === "boolean");
 
-    if (!result && _token.length >= 6) {
+    if (!result
+        && _token.length >= 6
+        && hasVowels) {
+
         // It's possible the token is multiple valid words
         // Try to take make sense of it
         for (let chunkSize = 3; chunkSize <= _token.length - 3; chunkSize++) {
@@ -128,52 +146,68 @@ async function isWord(token: string, cache: Boolean = true): Promise<boolean> {
 }
 
 async function getWordRatio(value: string, explicitInclusions: IInclusionFilter[]): Promise<number> {
-    let tokens = tokenizer.tokenize(value.replace(/[_0-9]+/g, " "));
+    let result = wordRatioCache.get<number>(value);
 
-    if (!tokens || tokens.length === 0)
-        return 0;
+    if (result !== undefined)
+        return result;
 
-    for (const inclusion of explicitInclusions) {
-        if (inclusion.requiredWordsRatio <= 0 || inclusion.requiredWordsRatio > 1)
-            throw new Error("Invalid requiredWordsRatio value");
+    return await computeWordRatioQueue(async () => {
+        // try again - might have been cached by the time this instance gets to execute
+        let result = wordRatioCache.get<number>(value);
 
+        if (result !== undefined)
+            return result;
 
-        tokens = chain(tokens)
-            .filter(word =>
-                word.length >= (inclusion.minWordLength ?? 3)
-                && !excludedWords.includes(word.toLowerCase()))
-            .map(word => {
-                // split camel-notation tokens
-                const result: string[] = [];
-                const camelCaseMatch = /[a-z][A-Z][a-z]{2}/g.exec(word);
+        let tokens = tokenizer.tokenize(value.replace(/[_0-9]+/g, " "));
 
-                if (camelCaseMatch) {
-                    for (const match of camelCaseMatch) {
-                        const i = word.indexOf(match) + 1;
-                        result.push(word.substring(0, i));
-                        word = word.substring(i);
+        if (!tokens || tokens.length === 0)
+            return 0;
+
+        for (const inclusion of explicitInclusions) {
+            if (inclusion.requiredWordsRatio <= 0 || inclusion.requiredWordsRatio > 1)
+                throw new Error("Invalid requiredWordsRatio value");
+
+            tokens = chain(tokens)
+                .filter(word =>
+                    word.length >= (inclusion.minWordLength ?? 3)
+                    && !excludedWords.includes(word.toLowerCase()))
+                .map(word => {
+                    // split camel-notation tokens
+                    const result: string[] = [];
+                    let reminder = word;
+
+                    while (reminder.length > 0) {
+                        const camelCaseMatch = /[a-z][A-Z][a-z]{2}/.exec(reminder);
+
+                        if (camelCaseMatch) {
+                            result.push(reminder.substring(0, camelCaseMatch.index + 1));
+                            reminder = reminder.substring(camelCaseMatch.index + 1);
+                        }
+                        else {
+                            result.push(reminder);
+                            break;
+                        }
                     }
-                    result.push(word);
-                }
-                else
-                    result.push(word);
 
-                return result;
-            })
-            .flatten()
-            .filter(word => !excludedWords.includes(word.toLowerCase()))
-            .value();
-    }
+                    return result;
+                })
+                .flatten()
+                .filter(word => !excludedWords.includes(word.toLowerCase()))
+                .value();
+        }
 
-    const wordTokens: string[] = [];
-    await Promise.all(tokens
-        .map(async word => {
-            const _isWord = await isWord(word);
-            if (_isWord)
-                wordTokens.push(word);
-        }));
+        const wordTokens: string[] = [];
+        await Promise.all(tokens
+            .map(async word => {
+                const _isWord = await isWord(word);
+                if (_isWord)
+                    wordTokens.push(word);
+            }));
 
-    return wordTokens.reduce((accum, word) => accum + word.length, 0) / value.replace(/[ \-_~:]+/g, "").length;
+        result = wordTokens.reduce((accum, word) => accum + word.length, 0) / value.replace(/[ \-_~:]+/g, "").length;
+        wordRatioCache.set(value, result);
+        return result;
+    });
 }
 
 async function isIncluded(value: string, explicitInclusions?: IInclusionFilter[]): Promise<boolean> {
@@ -354,8 +388,6 @@ function anchorSelector(idElement: HTMLElement, anchorElement: HTMLElement, labe
         return "";
 
     const neighboringParents = strategy === Strategy.LabelTargetNeighboringParents;
-    if (neighboringParents)
-        anchorElement = anchorElement.previousElementSibling as HTMLElement;
 
     let anchorSelector: string;
     const textContent = label.textContent?.trim();
@@ -536,7 +568,16 @@ async function subsetEvolutionInternal(document: Document, label: "auto" | HTMLE
         // mutation loop
         do {
             const selectorCandidate = selector(combinationSpace);
-            const validationResult = validateSelector(selectorCandidate, (anchorParent as IAnchor).element, targets);
+            const validationResult =
+
+                // check for specific cornercase where the target is the element right after the label (rather then nested within it)
+                (strategy === Strategy.LabelTargetNeighboringParents
+                    && targets.length === 1
+                    && (anchorParent as IAnchor).element === targets[0])
+
+                    ? { valid: true, matches: [anchorParent] }
+
+                    : validateSelector(selectorCandidate, (anchorParent as IAnchor).element, targets);
 
             if (validationResult.valid) {
 
@@ -549,7 +590,7 @@ async function subsetEvolutionInternal(document: Document, label: "auto" | HTMLE
                 return {
                     combinationSpace,
                     selector: idParent.element.id
-                        ? `#${idParent.element.id} ${anchorSelectorVal}${selectorCandidate}`
+                        ? `#${idParent.element.id} ${anchorSelectorVal}${(anchorParent.element === targets[0] ? " " : selectorCandidate)}`.trim()
                         : selectorCandidate,
                     ...(excludedMarkers.length ? { excludedMarkers } : undefined),
                     example: {
@@ -687,7 +728,7 @@ async function subsetEvolutionInternal(document: Document, label: "auto" | HTMLE
                 else if (label && strategy === Strategy.AnchorAsCommonParent) {
                     strategy = Strategy.LabelTargetNeighboringParents;
                     const newAnchorParentElement = [...(anchorParent as IAnchor).element.children]
-                        .find(closerParent => targets.every(target => isParent(target, closerParent as HTMLElement))) as HTMLElement | undefined;
+                        .find(closerParent => targets.every(target => target === closerParent || isParent(target, closerParent as HTMLElement))) as HTMLElement | undefined;
 
                     if (!newAnchorParentElement)
                         throw new Error("Could not find nested parent for the sibling relationship strategy");

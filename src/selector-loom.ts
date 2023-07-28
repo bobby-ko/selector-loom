@@ -22,7 +22,7 @@ export function selectorLoom(options: ISelectorLoomOptions): Promise<ISelector |
         throw new Error(`examples is expected`);
 
     if (Array.isArray(options.exclusions)
-        && options.exclusions.some(exclusion => !exclusion.elements && !exclusion.type && !exclusion.value) === true)
+        && options.exclusions.some(exclusion => !exclusion.element && !exclusion.type && !exclusion.value) === true)
         throw new Error(`Exclusions cannot have all blank criteria.`);
 
     switch (options.algorithm ?? Algorithm.SubsetEvolution)

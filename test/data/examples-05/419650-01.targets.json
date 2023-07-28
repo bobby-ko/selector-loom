@@ -1,0 +1,5 @@
+{
+  "targets": [
+    "//*[@id=\"StyledPdpWrapper\"]/div[2]/div[3]/div/div/div/div[2]/div[1]"
+  ]
+}
