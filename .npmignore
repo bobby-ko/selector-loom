@@ -1,0 +1,15 @@
+/.vscode
+/.devcontainer
+
+.gitattributes
+.npmignore
+vite.config.ts
+
+/src
+/node_modules
+/tmp
+/util
+/test
+/env
+
+secret.env
