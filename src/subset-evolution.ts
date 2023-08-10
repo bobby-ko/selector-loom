@@ -5,45 +5,48 @@ import { differenceInSeconds } from "date-fns";
 import { readFile, writeFile } from "fs/promises";
 import pLimit from "p-limit";
 import NodeCache from "node-cache";
-
+import { dirname, join as pathJoin } from 'path';
+import { fileURLToPath } from 'url';
 const { WordTokenizer, WordNet, NounInflector } = natural;
 import _, { CollectionChain } from 'lodash';
-const { chain, cloneDeep, last, orderBy, takeWhile } = _;
+const { chain, cloneDeep, last, takeWhile } = _;
 
 import { IElementMarker, IElementVolume, IInternalSelector, ISelector, IWeighted, MarkerType } from "./models.js";
 import { ISelectorLoomOptions, IExclusionFilter, IInclusionFilter } from "./selector-loom-options.js";
 
-const excludedAttributes = orderBy([
-    "alt",
-    "class",
-    "style",
-    "id",
-    "src",
-    "href",
-    "background",
-    "bgcolor",
-    "border",
-    "color",
-    "disabled",
-    "height",
-    "hidden",
-    "hreflang",
-    "loading",
-    "muted",
-    "preload",
-    "width",
-    "font-family",
-    "preserveAspectRatio",
-    "transform",
-    "opacity",
+// type ExcludedAttribute = string | { regex: string };
 
-]) as readonly string[];
+let moduleDirname!: string;
+try {
+    moduleDirname = __dirname;
+}
+catch (err: any) {
+    // @ts-ignore
+    moduleDirname = dirname(fileURLToPath(import.meta.url));
+}
+
+let excludedAttributes!: readonly string[];
+let excludedAttributesRegex!: readonly RegExp[];
+let excludedTags!: readonly string[];
+
+// const excludedAttributesList = require("./excluded-attributes.json") as ExcludedAttribute[];
+
+// const excludedAttributes = chain(excludedAttributesList)
+//     .filter(item => typeof item === "string")
+//     .map(item => item as string)
+//     .orderBy()
+//     .value() as readonly string[];
+
+// const excludedAttributesRegex = chain(excludedAttributesList)
+//     .filter(item => typeof item === "object" && item.regex !== undefined)
+//     .map(regex => new RegExp((regex as { regex: string }).regex))
+//     .value() as readonly RegExp[];
+
+// const excludedTags = require("./excluded-tags.json") as readonly string[];
 
 const excludedWords = [
     "the"
 ];
-
-const excludedTags = ["svg", "iframe"];
 
 let words: Record<string, boolean> | undefined;
 let chunks: Record<string, boolean> = {};
@@ -82,6 +85,29 @@ interface IAnchor {
     depthDelta: number;
 }
 
+async function ensureExcluded() {
+    if (excludedAttributes === undefined) {
+        const filename = pathJoin(moduleDirname, 'excluded-attributes.json');
+        const excludedAttributesList = JSON.parse((await readFile(filename)).toString());
+
+        excludedAttributes = chain(excludedAttributesList)
+            .filter(item => typeof item === "string")
+            .map(item => item as string)
+            .orderBy()
+            .value() as readonly string[];
+
+        excludedAttributesRegex = chain(excludedAttributesList)
+            .filter(item => typeof item === "object" && item.regex !== undefined)
+            .map(regex => new RegExp((regex as { regex: string }).regex))
+            .value() as readonly RegExp[];
+    }
+
+    if (excludedTags === undefined) {
+        const filename = pathJoin(moduleDirname, 'excluded-tags.json');
+        excludedTags = JSON.parse((await readFile(filename)).toString()) as readonly string[];
+    }
+}
+
 async function isWord(token: string, cache: Boolean = true): Promise<boolean> {
     // take some shortcuts first to reduce compute on words lookup
 
@@ -115,7 +141,7 @@ async function isWord(token: string, cache: Boolean = true): Promise<boolean> {
     const hasVowels = /[aeiouy]/i.test(token);
 
     if (hasVowels)
-        result = await new Promise((accept, reject) =>
+        result = await new Promise((accept) =>
             wordnet.lookup(_token, results => {
                 if (results.length > 0)
                     accept(true);
@@ -308,7 +334,9 @@ function $markers(element: HTMLElement, classDistribution: Record<string, number
     return chain(weighted(element.classList.values(), classDistribution, MarkerType.class))
         .concat(weighted(
             chain(element.getAttributeNames())
-                .filter(attributeName => bs(excludedAttributes, attributeName, (a, b) => a < b ? -1 : a > b ? 1 : 0) < 0)
+                .filter(attributeName =>
+                    bs(excludedAttributes, attributeName, (a, b) => a < b ? -1 : a > b ? 1 : 0) < 0
+                    && !excludedAttributesRegex.some(regex => regex.test(attributeName)))
                 .map(attributeName => `${attributeName}=${element.attributes.getNamedItem(attributeName)?.value}`)
                 .value(),
             attributeDistribution,
@@ -361,7 +389,7 @@ function selector(combinationSpace: IElementVolume[]): string {
     const subSelectors = chain(combinationSpace)
         .orderBy(elementSpace => elementSpace.depthDelta, "desc")
         .reduce(
-            (accum, elementSpace, i) => {
+            (accum, elementSpace) => {
                 accum.push({
                     distance: elementSpace.depthDelta,
                     selector: chain(elementSpace.selectorSegments)
@@ -431,15 +459,13 @@ function anchorSelector(idElement: HTMLElement, anchorElement: HTMLElement, labe
     return anchorSelector;
 }
 
-function hasParentOfTag(element: HTMLElement, tagNames: string[], stopAtParent: HTMLElement)
-{
+function hasParentOfTag(element: HTMLElement, tagNames: readonly string[], stopAtParent: HTMLElement) {
     let parent = element.parentElement;
 
-    while (parent && parent != stopAtParent)
-    {
-        if (tagNames.includes(parent.tagName))
+    while (parent && parent != stopAtParent) {
+        if (tagNames.includes(parent.tagName.toLowerCase()))
             return true;
-            
+
         parent = parent.parentElement
     }
 
@@ -464,6 +490,8 @@ async function subsetEvolutionInternal(document: Document, label: "auto" | HTMLE
                 target: targets
             }
         };
+
+    await ensureExcluded();
 
     const allAnchors = await Promise.all(targets
         .concat(label && label !== "auto" ? [label] : [])
@@ -539,11 +567,11 @@ async function subsetEvolutionInternal(document: Document, label: "auto" | HTMLE
         const attributeDistribution: Record<string, number> = {};
         const tagDistribution: Record<string, number> = {};
 
-        const elements = anchorParent.element.querySelectorAll("*:not(svg):not(img):not(noscript):not(script):not(iframe)");
+        const elements = anchorParent.element.querySelectorAll(`*:not(img):not(noscript):not(script)${excludedTags.map(excludedTag => `:not(${excludedTag})`).join("")}`);
         const distanceWeightReductionFactor = 1.0 / anchorParent.depthDelta;
 
         for (const element of elements) {
-            // exclude all nested elements in <svg> or <iframe>
+            // exclude all nested elements in <svg>, <iframe>, <picture>
             if (hasParentOfTag(element as HTMLElement, excludedTags, anchorParent.element))
                 continue;
 
@@ -561,8 +589,8 @@ async function subsetEvolutionInternal(document: Document, label: "auto" | HTMLE
 
             for (const attribute of element.attributes) {
                 const attributeName = attribute.name;
-                if (excludedAttributes.includes(attributeName)
-                    || attributeName.startsWith("aria"))
+                if (bs(excludedAttributes, attributeName, (a, b) => a < b ? -1 : a > b ? 1 : 0) >= 0
+                    || excludedAttributesRegex.some(regex => regex.test(attributeName)))
                     continue;
 
                 if (userExclusions?.some(exclusion =>
@@ -899,7 +927,7 @@ export async function subsetEvolution(options: ISelectorLoomOptions): Promise<IS
             if (!result) {
                 failureCount++;
 
-                if ( (failureCount / options.examples.length) > (options.examplesFailureTolerance ?? 0) )
+                if ((failureCount / options.examples.length) > (options.examplesFailureTolerance ?? 0))
                     return {
                         logs: [{
                             "warn": `Failed to generate selector for example`,
