@@ -103,6 +103,7 @@
     },
     "include": [
         "src/**/*.ts",
-        "src/**/*.json"
+        "src/excluded/*.json",
+        "src/dictionaries/*.txt"
     ]
 }

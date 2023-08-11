@@ -7,32 +7,16 @@
         {
             "type": "node",
             "request": "launch",
-            "name": "ParseDef Fix Generation",
-            "program": "${workspaceFolder}/src/parsedef-fix.ts",
+            "name": "Update Dictionary",
+            "program": "${workspaceFolder}/util/update-dictionary.ts",
             "env": {
                 "NODE_ENV": "development",
-                "LLM_TRACE": "true"
             },
-            "args": [],
-            "preLaunchTask": "build",
-            "outFiles": [
-                "${workspaceFolder}/dist/**/*.js"
+            "args": [
+                "en",
+                "./tmp/subset-evolution-words copy.json"
             ],
-            "runtimeArgs": [
-                "--experimental-modules"
-            ]
-        },
-        {
-            "type": "node",
-            "request": "launch",
-            "name": "incrementalSelectorGenerator",
-            "program": "${workspaceFolder}/src/parsedef-fix2.ts",
-            "env": {
-                "NODE_ENV": "development",
-                "ANOMALIES_DATE": "07/12/2023"
-            },
-            "args": [],
-            "preLaunchTask": "build",
+            "preLaunchTask": "build-util",
             "outFiles": [
                 "${workspaceFolder}/dist/**/*.js"
             ],

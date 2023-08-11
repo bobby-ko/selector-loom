@@ -132,7 +132,7 @@ describe("#subsetEvolution", () => {
         });
 
         expect(result).not.toBeNull();
-        expect(result?.selector).toBe("#pageContent section > div:has(#description) + div .sc-13r1zam-0 > span");
+        expect(result?.selector).toBe("#pageContent section > div:has(#description) + div div > span");
     });
 
     it("examples-03/21882617.html (no-class)", async () => {
