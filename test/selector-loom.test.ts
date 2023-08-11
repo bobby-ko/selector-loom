@@ -2,7 +2,7 @@ import axios from "axios";
 import { it, expect, describe } from "vitest";
 import { JSDOM } from "jsdom";
 import jquery from "jquery";
-import { MarkerType, selectorLoom } from "./../src/selector-loom.js"
+import { IExample, MarkerType, selectorLoom } from "./../src/selector-loom.js"
 
 const npmProjectPages = [
     "https://www.npmjs.com/package/typescript"
@@ -101,12 +101,6 @@ describe("#selectorLoom", () => {
 
                 return {
                     document,
-                    label: document.evaluate(
-                        '//*[@id="top"]/div[3]/div[3]/div/h3/text()',          // "Weekly Downloads" label
-                        document,
-                        null,
-                        window.XPathResult.FIRST_ORDERED_NODE_TYPE)
-                        .singleNodeValue as HTMLElement,
                     target:
                         document.evaluate(
                             '//*[@id="top"]/div[3]/div[3]/div/div/p',       // downloads number
@@ -114,7 +108,7 @@ describe("#selectorLoom", () => {
                             null,
                             window.XPathResult.FIRST_ORDERED_NODE_TYPE)
                             .singleNodeValue as HTMLElement
-                };
+                } as IExample;
             }));
 
         const result = await selectorLoom({
@@ -128,6 +122,7 @@ describe("#selectorLoom", () => {
         // #top div > div:has(h3:contains('Weekly Downloads')) p
 
         expect(result).not.toBeNull();
+        expect(result?.selector).toBe("#top p.black-80.flex-auto");
 
         for (const example of examples)
         {

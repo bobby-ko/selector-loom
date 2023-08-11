@@ -1,8 +1,13 @@
 # selector-loom
 
-### Generate CSS selector to target exact element from examples.
+### Better CSS selector generator for modern websites.
 
-Use this module when you want to generate a simplified and optimized CSS selector which would target specific elements in a webpage DOM. The `selectorLoom` function accepts one or more examples of a Document & HTMLElement target(s) and returns a qualified selector. This is useful when you need a selector that needs to work across permutations of a specific page type.
+Modern webpages are web-framework generated, DOMs are pruned and optimized, they change all the time, and can have permutations for same type of page-type.
+
+**Selector Loom** helps you generate simplified and optimized CSS selectors to target elements of interest. It goes beyond stiff xpath-style selectors or referencing transient (web-framework generated) class names and attributes. It generates high-quality selectors based on language-confirmed tokens and/or content label anchors that would survive more page permutations and iterations.
+
+Usage is simple - the `selectorLoom` function accepts one or more examples of a Document & element target(s) and returns a qualified selector.
+
 
 ## Algorithms
 
@@ -12,6 +17,7 @@ This algorithm works in two parts:
 
 1. Tries to identify the closest parent element with ID and uses that for the beginning of the selector. This results in a smaller sub-DOM where the target(s) reside. 
 2. Evolves an optimized non-id sub-selector based on statistically-weighted markers (classes, attributes, tag names, relative positions)
+3. If it cant find a suitable selector it will try to use a content text (aka a label) as an anchor for the target.
 
 Other then the case where the target's id can be used, this algorithm is not guaranteed to produce the most optimal selector. It will, however produce a fairly optimized one, because it mutates and evolves the selector, beginning from the simplest possible version, and gradually adding significance-weighted markers until it converges on a working version.  
 
@@ -48,7 +54,7 @@ const examples = await Promise.all(npmProjectPages
             document,
             target:
                 document.evaluate(
-                    '//*[@id="top"]/div[3]/div[3]/div/div/p',       // downloads number
+                    '//*[@id="top"]/div[3]/div[3]/div/div/p',       // downloads number xpath
                     document,
                     null,
                     window.XPathResult.FIRST_ORDERED_NODE_TYPE)
@@ -58,11 +64,15 @@ const examples = await Promise.all(npmProjectPages
 
 // Pass the examples of document-target and get an optimized, reconciled selector 
 const result = await selectorLoom({
-    examples
+    examples,
+    inclusions: {
+        // Use tokens only if containing at least 67% real language words
+        requiredWordsRatio: 0.67
+    }
 });
 
 console.info(result?.selector);
-// #top p.fw6.black-80.f4.pr2
+// #top p.black-80.flex-auto
 ```
 
 ## Tests

@@ -10,12 +10,35 @@
             "detail": "ts-node build.ts && tsc --build tsconfig.json"
         },
         {
+            "label": "build-util",
+            "type": "npm",
+            "script": "build:util",
+            "group": "build",
+            "problemMatcher": [],
+            "detail": "tsc"
+        },
+        {
             "type": "npm",
             "script": "test",
             "group": "test",
             "problemMatcher": [],
             "label": "npm: test",
             "detail": "vitest --coverage"
+        },
+        {
+            "type": "npm",
+            "script": "publish",
+            "group": "build",
+            "problemMatcher": [],
+            "label": "npm: publish"
+        },
+        {
+            "type": "npm",
+            "script": "login",
+            "group": "test",
+            "problemMatcher": [],
+            "label": "npm: login",
+            "detail": "npm login"
         }
     ]
 }

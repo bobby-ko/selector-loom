@@ -1,0 +1,38 @@
+[
+    "alt",
+    {
+        "regex": "^aria(-.+|$)"
+    },
+    "class",
+    "style",
+    "id",
+    "src",
+    "href",
+    {
+        "regex": "^background(-.+|$)"
+    },
+    "bgcolor",
+    "border",
+    "color",
+    "disabled",
+    "height",
+    "hidden",
+    "hreflang",
+    "loading",
+    "muted",
+    "preload",
+    "width",
+    "preserveAspectRatio",
+    "transform",
+    "opacity",
+    "direction",
+    "rel",
+    "spellcheck",
+    "autocorrect",
+    "autocomplete",
+    "display",
+    "orientation",
+    "onfocus",
+    "onblur",
+    "align"
+]
