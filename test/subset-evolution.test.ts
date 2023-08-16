@@ -8,7 +8,7 @@ const { chain } = _;
 
 import { subsetEvolution } from "./../src/subset-evolution.js";
 import { IExample } from "./../src/selector-loom-options.js";
-import { MarkerType } from "../src/models.js";
+import { MarkerType } from "./../src/models.js";
 
 async function loadExamples(path: string, filter?: (file) => Boolean) {
     return await Promise.all(
@@ -202,5 +202,23 @@ describe("#subsetEvolution", () => {
         expect(result?.selector).toBe("#StyledPdpWrapper div > button:has(#description) + div");
     });        
 
+
+    it("examples-07/12030014.html (0.67, auto label)", async () => {
+        // load the examples and targets
+
+        const examples = await loadExamples("./test/data/examples-07", file => file === "12030014.html");
+        examples[0].label = "auto";
+        const result = await subsetEvolution({
+            examples,
+            inclusions: [
+                {
+                    requiredWordsRatio: 0.67
+                }
+            ]
+        });
+
+        expect(result).not.toBeNull();
+        expect(result?.selector).toBe("#main div.style__ProductDetailsWrapper-PDP__sc-4buzay-0 > div > div > div > div.row > div.fsReviewLinkDefaultContainer.RatingWrapperStyle__RatingWrapperContainer-PDP__sc-1nkvx7s-0 > div.fsReviewLinkDefaultContainer.RatingWrapperStyle__HoverContainer-PDP__sc-1nkvx7s-2 > div.summaryContainer.fsReviewPopup > div > div > div[data-testid='cgcModalWrapper'] > div > span.cgcmodalratingcount");
+    });        
 
 })

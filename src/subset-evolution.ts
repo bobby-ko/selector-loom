@@ -9,7 +9,7 @@ import { dirname, join as pathJoin } from 'path';
 import { fileURLToPath } from 'url';
 const { WordTokenizer, WordNet, NounInflector } = natural;
 import _, { CollectionChain } from 'lodash';
-const { chain, cloneDeep, last, takeWhile } = _;
+const { chain, cloneDeep, last, takeWhile, sumBy } = _;
 
 import { IElementMarker, IElementVolume, IInternalSelector, ISelector, IWeighted, MarkerType } from "./models.js";
 import { ISelectorLoomOptions, IExclusionFilter, IInclusionFilter } from "./selector-loom-options.js";
@@ -55,9 +55,14 @@ class SubsetEvolution {
     private static readonly defaultLanguage = ["en"] as readonly string[];
 
     private static dictionaries: Record<string, Set<string>> = {};
+
     private static words: Record<string, boolean> | undefined;
     private static wordsUpdated = false;
     private static wordsLastSaved: Date | undefined;
+
+    private static wordSplits: Record<string, string[] | null> | undefined;
+    private static wordSplitsUpdated = false;
+    private static wordSplitsLastSaved: Date | undefined;
 
     private static readonly tokenizer = new WordTokenizer();
     private static readonly nounInflector = new NounInflector();
@@ -75,6 +80,7 @@ class SubsetEvolution {
     private readonly attributeDistribution: Record<string, number> = {};
     private readonly tagDistribution: Record<string, number> = {};
     private dictionary!: Set<string>;
+    private dictionaryLongerWords: string[] | undefined;
 
     private static async ensureExcluded() {
         if (SubsetEvolution.excludedAttributes === undefined) {
@@ -110,7 +116,7 @@ class SubsetEvolution {
         if (this.dictionary.has(_token))
             return true;
 
-        let result = (SubsetEvolution.words as Record<string, boolean>)[_token];
+        let result = SubsetEvolution.words?.[_token];
         if (result !== undefined)
             return result;
 
@@ -132,13 +138,14 @@ class SubsetEvolution {
 
         // console.assert(typeof result === "boolean");
 
+        const l = _token.length;
         if (!result
-            && _token.length >= 6
+            && l >= 6
             && hasVowels) {
 
             // It's possible the token is multiple valid words
             // Try to take make sense of it
-            for (let chunkSize = 3; chunkSize <= _token.length - 3; chunkSize++) {
+            for (let chunkSize = 3; chunkSize <= l - 3; chunkSize++) {
                 const chunk = _token.substring(0, chunkSize);
                 const chunkIsWord = await this.isWord(chunk, false);
 
@@ -153,6 +160,9 @@ class SubsetEvolution {
             }
         }
 
+        if (result === undefined)
+            result = false;
+
         // this condition is to prevent caching of chuncks from the process of trying to parse out concatenated words
         if (cache) {
             (SubsetEvolution.words as Record<string, boolean>)[_token] = result;
@@ -163,6 +173,110 @@ class SubsetEvolution {
             this.chunks[_token] = result;
 
         return result;
+    }
+
+    private static splitCamelNotation(word: string): string | string[] {
+        let result: string[] | undefined;
+        let reminder = word;
+
+        while (reminder.length > 0) {
+            const camelCaseMatch = /[a-z][A-Z][a-z]{2}/.exec(reminder);
+
+            if (camelCaseMatch) {
+                if (!result)
+                    result = [];
+                result.push(reminder.substring(0, camelCaseMatch.index + 1));
+                reminder = reminder.substring(camelCaseMatch.index + 1);
+            }
+            else {
+                if ((result?.length ?? 0) > 0) {
+                    (result as string[]).push(reminder);
+                    break;
+                }
+                else
+                    return word;    // optimization short circuit - return same instance
+            }
+        }
+
+        return result as string[];
+    }
+
+    private splitLongWord(word: string): string | string[] {
+        const l = word.length;
+        if (l > 12) {
+            // long word - try to recognize some 5+ letter word and see if we can split it
+
+            const _word = word.toLowerCase();
+
+            // check it is not a legit long single word
+            if (this.dictionary.has(_word))
+                return word;
+
+            const cachedResult = (SubsetEvolution.wordSplits as Record<string, string[] | null>)[_word];
+            if (cachedResult !== undefined)
+                return cachedResult ?? word;    // could be null, which means it was previously processed but no split was found and set as null 
+
+            const lengthThreshold = l - 3;
+            let index = 0;
+            const matches = chain(this.dictionaryLongerWords)
+                .map(lookupWord => {
+                    if (lookupWord.length > lengthThreshold)
+                        return undefined;
+                    const start = _word.indexOf(lookupWord);
+                    return start >= 0
+                        ? {
+                            matched: lookupWord,
+                            start,
+                            end: start + lookupWord.length,
+                            i: index++
+                        }
+                        : undefined;
+                })
+                .filter(match => match !== undefined)
+                .map(match => match as {
+                    matched: string,
+                    start: number,
+                    end: number,
+                    i: number
+                })
+                .value();
+
+            if (matches?.length) {
+                let cutmarks = chain(matches)
+                    .takeWhile(match => match.i === 0
+                        || chain(matches)
+                            .take(match.i)
+                            .every(priorMatch =>
+                                match.end <= priorMatch.start
+                                || match.start >= priorMatch.end)
+                            .value())
+                    .map(match => [match.start, match.end])
+                    .flatten()
+                    .concat(0, word.length)
+                    .orderBy()
+                    .uniq()
+                    .value();
+
+                const result = chain(cutmarks)
+                    .take(cutmarks.length - 1)
+                    .map((cutmark, i) => word.substring(cutmark, cutmarks[i + 1]))
+                    .value();
+
+                if (sumBy(result, chunk => chunk.length) !== l
+                    || result.some(chunk => !word.includes(chunk)))
+                    throw new Error(`Long word breakdown error - split length or content doesn't match`);
+
+                (SubsetEvolution.wordSplits as Record<string, string[] | null>)[_word] = result;
+                SubsetEvolution.wordSplitsUpdated = true;
+
+                return result;
+            }
+            
+            (SubsetEvolution.wordSplits as Record<string, string[] | null>)[_word] = null;
+            SubsetEvolution.wordSplitsUpdated = true;
+        }
+
+        return word;
     }
 
     private async getWordRatio(value: string, explicitInclusions: IInclusionFilter[]): Promise<number> {
@@ -191,26 +305,9 @@ class SubsetEvolution {
                     .filter(word =>
                         word.length >= (inclusion.minWordLength ?? 3)
                         && !SubsetEvolution.excludedWords.includes(word.toLowerCase()))
-                    .map(word => {
-                        // split camel-notation tokens
-                        const result: string[] = [];
-                        let reminder = word;
-
-                        while (reminder.length > 0) {
-                            const camelCaseMatch = /[a-z][A-Z][a-z]{2}/.exec(reminder);
-
-                            if (camelCaseMatch) {
-                                result.push(reminder.substring(0, camelCaseMatch.index + 1));
-                                reminder = reminder.substring(camelCaseMatch.index + 1);
-                            }
-                            else {
-                                result.push(reminder);
-                                break;
-                            }
-                        }
-
-                        return result;
-                    })
+                    .map(SubsetEvolution.splitCamelNotation)
+                    .flatten()
+                    .map(word => this.splitLongWord(word))
                     .flatten()
                     .filter(word => !SubsetEvolution.excludedWords.includes(word.toLowerCase()))
                     .value();
@@ -517,6 +614,11 @@ class SubsetEvolution {
                         se.dictionary = new Set<string>(_dictionary);
                 }
             }
+
+            se.dictionaryLongerWords = chain(Array.from(se.dictionary))
+                .filter(word => word.length >= 5)
+                .orderBy(word => word.length, "desc")
+                .value();
         }
 
         if (!SubsetEvolution.words) {
@@ -528,8 +630,17 @@ class SubsetEvolution {
             catch (err) {
                 SubsetEvolution.words = {};
             }
+        }
 
-            // cleanup dupes from 
+        if (!SubsetEvolution.wordSplits) {
+            try {
+                SubsetEvolution.wordSplits = process.env.SELECTOR_LOOM_TMP
+                    ? JSON.parse((await readFile(`${process.env.SELECTOR_LOOM_TMP}/subset-evolution-word-splits.json`)).toString())
+                    : {}
+            }
+            catch (err) {
+                SubsetEvolution.wordSplits = {};
+            }
         }
 
         const allAnchors = await Promise.all(targets
@@ -843,14 +954,27 @@ class SubsetEvolution {
 
     public static async saveWords() {
         try {
-            if (process.env.SELECTOR_LOOM_TMP && SubsetEvolution.wordsUpdated) {
-                const now = new Date();
+            if (process.env.SELECTOR_LOOM_TMP) {
+                if (SubsetEvolution.wordsUpdated) {
+                    const now = new Date();
 
-                if (!SubsetEvolution.wordsLastSaved
-                    || differenceInSeconds(now, SubsetEvolution.wordsLastSaved) > 10) {
-                    SubsetEvolution.wordsUpdated = false;
-                    await writeFile(`${process.env.SELECTOR_LOOM_TMP}/subset-evolution-words.json`, JSON.stringify(SubsetEvolution.words, null, " "));
-                    SubsetEvolution.wordsLastSaved = now;
+                    if (!SubsetEvolution.wordsLastSaved
+                        || differenceInSeconds(now, SubsetEvolution.wordsLastSaved) > 10) {
+                        SubsetEvolution.wordsUpdated = false;
+                        await writeFile(`${process.env.SELECTOR_LOOM_TMP}/subset-evolution-words.json`, JSON.stringify(SubsetEvolution.words, null, " "));
+                        SubsetEvolution.wordsLastSaved = now;
+                    }
+                }
+
+                if (SubsetEvolution.wordSplitsUpdated) {
+                    const now = new Date();
+
+                    if (!SubsetEvolution.wordSplitsLastSaved
+                        || differenceInSeconds(now, SubsetEvolution.wordSplitsLastSaved) > 10) {
+                        SubsetEvolution.wordSplitsUpdated = false;
+                        await writeFile(`${process.env.SELECTOR_LOOM_TMP}/subset-evolution-word-splits.json`, JSON.stringify(SubsetEvolution.wordSplits, null, " "));
+                        SubsetEvolution.wordSplitsLastSaved = now;
+                    }
                 }
             }
         }

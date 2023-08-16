@@ -1,0 +1,5 @@
+{
+  "targets": [
+    "//*[@id=\"pdp-lpd\"]/div/div[3]/div/div/div[2]/div/div/div/div/span[2]"
+  ]
+}

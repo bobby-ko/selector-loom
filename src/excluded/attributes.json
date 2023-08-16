@@ -34,5 +34,8 @@
     "orientation",
     "onfocus",
     "onblur",
-    "align"
+    "align",
+    {
+        "regex": "^font(-.+|$)"
+    }
 ]
