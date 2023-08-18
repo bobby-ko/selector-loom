@@ -7,7 +7,8 @@ export default defineConfig({
         },
         testTimeout: -1,
         env: {
-            "SELECTOR_LOOM_TMP": "./tmp"
+            "SELECTOR_LOOM_TMP": "./tmp",
+            "SELECTOR_LOOM_MAX_WORDNET_LOOKUP_BUDGET_MS": "60000"
         }
     }
 })

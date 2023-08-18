@@ -1,7 +1,7 @@
 import bs from "binary-search";
 import jquery from "jquery";
 import natural from "natural";
-import { differenceInSeconds } from "date-fns";
+import { differenceInMilliseconds, differenceInSeconds } from "date-fns";
 import { readFile, writeFile } from "fs/promises";
 import pLimit from "p-limit";
 import NodeCache from "node-cache";
@@ -15,6 +15,8 @@ import { IElementMarker, IElementVolume, IInternalSelector, ISelector, IWeighted
 import { ISelectorLoomOptions, IExclusionFilter, IInclusionFilter } from "./selector-loom-options.js";
 
 // type ExcludedAttribute = string | { regex: string };
+
+const warnExhaustedTimeBudget = `Exhausted time budget. Completing generation before processing all examples.`;
 
 let moduleDirname!: string;
 try {
@@ -67,6 +69,7 @@ class SubsetEvolution {
     private static readonly tokenizer = new WordTokenizer();
     private static readonly nounInflector = new NounInflector();
     private static readonly wordnet = new WordNet();
+    private static readonly maxWordnetLookupBudgetMs = Number.parseInt(process.env.SELECTOR_LOOM_MAX_WORDNET_LOOKUP_BUDGET_MS ?? "60000");
 
     private static readonly wordRatioCache = new NodeCache({
         stdTTL: 600,
@@ -79,8 +82,20 @@ class SubsetEvolution {
     private readonly classDistribution: Record<string, number> = {};
     private readonly attributeDistribution: Record<string, number> = {};
     private readonly tagDistribution: Record<string, number> = {};
+    private readonly timeBudgetSec: number;
+    private readonly startAt: Date;
+    private overTimeBudget: Boolean = false;
+
     private dictionary!: Set<string>;
     private dictionaryLongerWords: string[] | undefined;
+    private wordnetLookupBudgetMs: number = SubsetEvolution.maxWordnetLookupBudgetMs;
+    private overWordnetLookupBudgetWarning: boolean = false;
+    private logs: Record<string, any>[] = [];
+
+    constructor(timeBudgetSec?: number) {
+        this.timeBudgetSec = timeBudgetSec ?? 0;
+        this.startAt = new Date();
+    }
 
     private static async ensureExcluded() {
         if (SubsetEvolution.excludedAttributes === undefined) {
@@ -124,17 +139,40 @@ class SubsetEvolution {
         if (result !== undefined)
             return result;
 
-        const hasVowels = /[aeiouy]/i.test(token);
+        let hasVowels = /[aeiouy]/i.test(token);
 
-        if (hasVowels)
-            result = await new Promise((accept) =>
-                SubsetEvolution.wordnet.lookup(_token, results => {
-                    if (results.length > 0)
-                        accept(true);
-                    else
-                        // try to singularize it - sometimes that results in better lookups for some words
-                        SubsetEvolution.wordnet.lookup(SubsetEvolution.nounInflector.singularize(_token), results => accept(results.length > 0));
-                }));
+        // special case - y is not a vowel at beginning of words
+        if (hasVowels && token[0] === "y")
+            hasVowels = /[aeiouy]/i.test(token.substring(1));
+
+        if (hasVowels
+            && !/[^aeiouy]{5}/.test(token))     // don't lookup words with 5 or more consecutive consonants
+        {
+            if (this.wordnetLookupBudgetMs > 0 && !this.overTimeBudget) {
+                const start = new Date();
+
+                result = await new Promise((accept) =>
+                    SubsetEvolution.wordnet.lookup(_token, results => {
+                        if (results.length > 0)
+                            accept(true);
+                        else
+                            // try to singularize it - sometimes that results in better lookups for some words
+                            SubsetEvolution.wordnet.lookup(SubsetEvolution.nounInflector.singularize(_token), results => accept(results.length > 0));
+                    }));
+
+                this.wordnetLookupBudgetMs -= differenceInMilliseconds(new Date(), start);
+            }
+            else if (!this.overTimeBudget && !this.overWordnetLookupBudgetWarning) {
+                const warn = `Exhausted Wordnet Lookup Budget. Continuing using only dictionary and already classified words.`;
+                console.warn(`[selector-loom] ${warn}`);
+                this.logs.push({
+                    warn,
+                    code: "timeout",
+                    timestamp: new Date()
+                });
+                this.overWordnetLookupBudgetWarning = true;
+            }
+        }
 
         // console.assert(typeof result === "boolean");
 
@@ -167,7 +205,6 @@ class SubsetEvolution {
         if (cache) {
             (SubsetEvolution.words as Record<string, boolean>)[_token] = result;
             SubsetEvolution.wordsUpdated = true;
-            this.chunks = {};
         }
         else
             this.chunks[_token] = result;
@@ -271,7 +308,7 @@ class SubsetEvolution {
 
                 return result;
             }
-            
+
             (SubsetEvolution.wordSplits as Record<string, string[] | null>)[_word] = null;
             SubsetEvolution.wordSplitsUpdated = true;
         }
@@ -549,7 +586,7 @@ class SubsetEvolution {
         return false;
     }
 
-    public static async generate(document: Document, label: "auto" | HTMLElement | undefined, targets: HTMLElement[], maxRecursion: number, excludedMarkers: IElementMarker[], userInclusions?: IInclusionFilter[], userExclusions?: IExclusionFilter[]): Promise<IInternalSelector | null> {
+    public static async generate(document: Document, label: "auto" | HTMLElement | undefined, targets: HTMLElement[], maxRecursion: number, excludedMarkers: IElementMarker[], userInclusions?: IInclusionFilter[], userExclusions?: IExclusionFilter[], timeBudgetSec?: number): Promise<IInternalSelector | null> {
         if (!document)
             throw new Error(`document is required`);
 
@@ -579,7 +616,7 @@ class SubsetEvolution {
                 .value()
             : SubsetEvolution.defaultLanguage;
 
-        const se = new SubsetEvolution();
+        const se = new SubsetEvolution(timeBudgetSec);
 
         for (const language of languages) {
             if (language !== SubsetEvolution.defaultLanguage[0])
@@ -713,13 +750,24 @@ class SubsetEvolution {
             if (!anchorParent)
                 throw new Error("Failed to identify anchor element");
 
-            const elements = anchorParent.element.querySelectorAll(`*:not(img):not(noscript):not(script)${SubsetEvolution.excludedTags.map(excludedTag => `:not(${excludedTag})`).join("")}`);
+            const elements = anchorParent.element.querySelectorAll(`*:not(script)${SubsetEvolution.excludedTags.map(excludedTag => `:not(${excludedTag})`).join("")}`);
             const distanceWeightReductionFactor = 1.0 / anchorParent.depthDelta;
 
             for (const element of elements) {
                 // exclude all nested elements in <svg>, <iframe>, <picture>
                 if (SubsetEvolution.hasParentOfTag(element as HTMLElement, SubsetEvolution.excludedTags, anchorParent.element))
                     continue;
+
+                if (se.timeBudgetSec > 0 && !se.overTimeBudget && differenceInSeconds(new Date(), se.startAt) > se.timeBudgetSec) {
+                    const warn = `Exhausted time budget. Ignoring further Wordnet Lookups and continuing using only dictionary and already classified words.`;
+                    console.warn(`[selector-loom] ${warn}`);
+                    se.logs.push({
+                        warn,
+                        code: "timeout",
+                        timestamp: new Date()
+                    })
+                    se.overTimeBudget = true;
+                }
 
                 for (const className of element.classList) {
                     if (userExclusions?.some(exclusion =>
@@ -800,7 +848,8 @@ class SubsetEvolution {
                         example: {
                             document,
                             target: targets
-                        }
+                        },
+                        ...(se.logs.length ? { logs: se.logs } : undefined)
                     }
                 }
 
@@ -949,33 +998,47 @@ class SubsetEvolution {
         }
         while (retry)
 
-        return null;
+        return se.logs.length 
+            ? {
+                example: {
+                    document,
+                    target: targets
+                },
+                logs: se.logs 
+            }
+            : null;
     }
 
     public static async saveWords() {
         try {
             if (process.env.SELECTOR_LOOM_TMP) {
-                if (SubsetEvolution.wordsUpdated) {
-                    const now = new Date();
+                await Promise.all([
+                    (async () => {
+                        if (SubsetEvolution.wordsUpdated) {
+                            const now = new Date();
 
-                    if (!SubsetEvolution.wordsLastSaved
-                        || differenceInSeconds(now, SubsetEvolution.wordsLastSaved) > 10) {
-                        SubsetEvolution.wordsUpdated = false;
-                        await writeFile(`${process.env.SELECTOR_LOOM_TMP}/subset-evolution-words.json`, JSON.stringify(SubsetEvolution.words, null, " "));
-                        SubsetEvolution.wordsLastSaved = now;
-                    }
-                }
+                            if (!SubsetEvolution.wordsLastSaved
+                                || differenceInSeconds(now, SubsetEvolution.wordsLastSaved) > 10) {
+                                SubsetEvolution.wordsUpdated = false;
+                                await writeFile(`${process.env.SELECTOR_LOOM_TMP}/subset-evolution-words.json`, JSON.stringify(SubsetEvolution.words, null, " "));
+                                SubsetEvolution.wordsLastSaved = now;
+                            }
+                        }
+                    })(),
 
-                if (SubsetEvolution.wordSplitsUpdated) {
-                    const now = new Date();
+                    (async () => {
+                        if (SubsetEvolution.wordSplitsUpdated) {
+                            const now = new Date();
 
-                    if (!SubsetEvolution.wordSplitsLastSaved
-                        || differenceInSeconds(now, SubsetEvolution.wordSplitsLastSaved) > 10) {
-                        SubsetEvolution.wordSplitsUpdated = false;
-                        await writeFile(`${process.env.SELECTOR_LOOM_TMP}/subset-evolution-word-splits.json`, JSON.stringify(SubsetEvolution.wordSplits, null, " "));
-                        SubsetEvolution.wordSplitsLastSaved = now;
-                    }
-                }
+                            if (!SubsetEvolution.wordSplitsLastSaved
+                                || differenceInSeconds(now, SubsetEvolution.wordSplitsLastSaved) > 10) {
+                                SubsetEvolution.wordSplitsUpdated = false;
+                                await writeFile(`${process.env.SELECTOR_LOOM_TMP}/subset-evolution-word-splits.json`, JSON.stringify(SubsetEvolution.wordSplits, null, " "));
+                                SubsetEvolution.wordSplitsLastSaved = now;
+                            }
+                        }
+                    })()
+                ]);
             }
         }
         catch (err: any) {
@@ -1063,7 +1126,13 @@ export async function subsetEvolution(options: ISelectorLoomOptions): Promise<IS
                         exclusion.element = [exclusion.element];
         }
 
+        let examplesLeft = options.examples.length;
+        const observeTimeBudget = (options.timeBudgetSec ?? 0) > 0;
+        let timeBudgetSec = options.timeBudgetSec ?? 0;
+        let i = 20;
         for (const example of options.examples) {
+            const startAt = new Date();
+
             const result = await SubsetEvolution.generate(
                 example.document,
                 example.label,
@@ -1073,7 +1142,12 @@ export async function subsetEvolution(options: ISelectorLoomOptions): Promise<IS
                 options.maxRecursion ?? 100,
                 excludedMarkers,
                 options.inclusions,
-                options.exclusions);
+                options.exclusions,
+                observeTimeBudget
+                    ? Math.max(
+                        1,
+                        Math.round((timeBudgetSec / examplesLeft--) * i--))
+                    : 0);
 
             if (!result) {
                 failureCount++;
@@ -1081,8 +1155,10 @@ export async function subsetEvolution(options: ISelectorLoomOptions): Promise<IS
                 if ((failureCount / options.examples.length) > (options.examplesFailureTolerance ?? 0))
                     return {
                         logs: [{
-                            "warn": `Failed to generate selector for example`,
-                            example
+                            warn: `Failed to generate selector for example`,
+                            code: "failed",
+                            example,
+                            timestamp: new Date()
                         }]
                     };
             }
@@ -1091,6 +1167,14 @@ export async function subsetEvolution(options: ISelectorLoomOptions): Promise<IS
 
             if (options.progress)
                 await options.progress(++processed);
+
+            if (observeTimeBudget) {
+                timeBudgetSec -= differenceInSeconds(new Date, startAt);
+                if (timeBudgetSec <= 0) {
+                    console.warn(`[selector-loom] ${warnExhaustedTimeBudget}`);
+                    break;
+                }
+            }
         }
 
         const groups = chain(results)
@@ -1118,28 +1202,38 @@ export async function subsetEvolution(options: ISelectorLoomOptions): Promise<IS
                         selector: selectorCandidate,
                         logs: (currentGroup[0]?.logs ?? [])
                             .concat({
-                                "info": `Example set resulted in ${groups.length} selector versions. A common version was found and successfully validated across the full set.`,
-                                "details": groups
+                                info: `Example set resulted in ${groups.length} selector versions. A common version was found and successfully validated across the full set.`,
+                                details: groups
                                     .map(group => ({
                                         selector: group[0].selector,
                                         count: group.length,
                                         examples: group.map(selector => selector.example)
-                                    }))
+                                    })),
+                                timestamp: new Date()
                             })
                     }
                 }
             }
         }
 
+        let logs = results[0].logs;
+        if (observeTimeBudget && timeBudgetSec < 0)
+            logs = [...logs ?? [], {
+                warn: warnExhaustedTimeBudget,
+                code: "timeout",
+                details: {
+                    examples: options.examples.length,
+                    processed: results.length
+                },
+                timestamp: new Date()
+            }]
+
         return {
             selector: results[0].selector,
-            logs: results[0].logs
+            logs,
         };
     }
     finally {
-        if (process.env.NODE_ENV === 'test')
-            await SubsetEvolution.saveWords();
-        else
-            queueMicrotask(SubsetEvolution.saveWords);
+        await SubsetEvolution.saveWords();
     }
 }

@@ -1,5 +1,4 @@
 [
-    "alt",
     {
         "regex": "^aria(-.+|$)"
     },
@@ -34,6 +33,7 @@
     "orientation",
     "onfocus",
     "onblur",
+    "onclick",
     "align",
     {
         "regex": "^font(-.+|$)"

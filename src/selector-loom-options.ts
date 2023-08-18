@@ -58,5 +58,7 @@ export interface ISelectorLoomOptions {
      * */
     exclusions?: IExclusionFilter | IExclusionFilter[],
 
-    progress?: (processed: number) => Promise<void> | void
+    progress?: (processed: number) => Promise<void> | void,
+
+    timeBudgetSec?: number 
 }

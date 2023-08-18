@@ -1,5 +1,5 @@
 import { it, expect, describe } from "vitest";
-import { readdir, readFile } from "fs/promises";
+import { readdir, readFile, rm } from "fs/promises";
 import { JSDOM } from "jsdom";
 import jquery from "jquery";
 import _ from 'lodash';
@@ -200,6 +200,38 @@ describe("#subsetEvolution", () => {
 
         expect(result).not.toBeNull();
         expect(result?.selector).toBe("#StyledPdpWrapper div > button:has(#description) + div");
+    });        
+
+    it("examples-05/419650-01.html (0.67, auto label; 3sec)", async () => {
+        // load the examples and targets
+        try
+        {
+            await rm(`${process.env.SELECTOR_LOOM_TMP}/subset-evolution-words.json`);
+            await rm(`${process.env.SELECTOR_LOOM_TMP}/subset-evolution-word-splits.json`);
+        }
+        catch (err)
+        {
+
+        }
+
+        const examples = await loadExamples("./test/data/examples-05", file => file === "419650-01.html");
+        examples[0].label = "auto";
+        const result = await subsetEvolution({
+            examples,
+            inclusions: [
+                {
+                    requiredWordsRatio: 0.67
+                }
+            ],
+            timeBudgetSec: 3
+        });
+
+        expect(result).not.toBeNull();
+        expect(result?.selector).toBe("#StyledPdpWrapper div > button:has(#description) + div");
+        expect(result?.logs?.some(log => log.code === "timeout")).toBeTruthy();
+    },
+    {
+        retry: 2
     });        
 
 
