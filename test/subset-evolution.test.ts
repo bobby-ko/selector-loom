@@ -104,8 +104,8 @@ describe("#subsetEvolution", () => {
 
         expect(result).not.toBeNull();
         expect(result?.selector).toBe("#tabContent-tab-Details .styles__Bullet-sc-6aebpn-0 > span");
-    });    
-    
+    });
+
     it("examples-02/14759.html (inclusions:0.67)", async () => {
         // load the examples and targets
 
@@ -121,7 +121,7 @@ describe("#subsetEvolution", () => {
 
         expect(result).not.toBeNull();
         expect(result?.selector).toBe("#tabContent-tab-Details li > span");
-    });        
+    });
 
     it("examples-03/21882617.html", async () => {
         // load the examples and targets
@@ -182,7 +182,7 @@ describe("#subsetEvolution", () => {
 
         expect(result).not.toBeNull();
         expect(result?.selector).toBe("#tabContent-tab-Details li > span");
-    });        
+    });
 
     it("examples-05/419650-01.html (0.67, auto label)", async () => {
         // load the examples and targets
@@ -200,17 +200,15 @@ describe("#subsetEvolution", () => {
 
         expect(result).not.toBeNull();
         expect(result?.selector).toBe("#StyledPdpWrapper div > button:has(#description) + div");
-    });        
+    });
 
     it("examples-05/419650-01.html (0.67, auto label; 3sec)", async () => {
         // load the examples and targets
-        try
-        {
+        try {
             await rm(`${process.env.SELECTOR_LOOM_TMP}/subset-evolution-words.json`);
             await rm(`${process.env.SELECTOR_LOOM_TMP}/subset-evolution-word-splits.json`);
         }
-        catch (err)
-        {
+        catch (err) {
 
         }
 
@@ -230,9 +228,9 @@ describe("#subsetEvolution", () => {
         expect(result?.selector).toBe("#StyledPdpWrapper div > button:has(#description) + div");
         expect(result?.logs?.some(log => log.code === "timeout")).toBeTruthy();
     },
-    {
-        retry: 2
-    });        
+        {
+            retry: 2
+        });
 
 
     it("examples-07/12030014.html (0.67, auto label)", async () => {
@@ -251,6 +249,25 @@ describe("#subsetEvolution", () => {
 
         expect(result).not.toBeNull();
         expect(result?.selector).toBe("#main div.style__ProductDetailsWrapper-PDP__sc-4buzay-0 > div > div > div > div.row > div.fsReviewLinkDefaultContainer.RatingWrapperStyle__RatingWrapperContainer-PDP__sc-1nkvx7s-0 > div.fsReviewLinkDefaultContainer.RatingWrapperStyle__HoverContainer-PDP__sc-1nkvx7s-2 > div.summaryContainer.fsReviewPopup > div > div > div[data-testid='cgcModalWrapper'] > div > span.cgcmodalratingcount");
-    });        
+    });
+
+    it("examples-08/395821-01.html (0.67, auto label)", async () => {
+        // load the examples and targets
+
+        const examples = await loadExamples("./test/data/examples-08", file => file === "395821-01.html");
+        examples[0].label = "auto";
+        const result = await subsetEvolution({
+            examples,
+            inclusions: [
+                {
+                    requiredWordsRatio: 0.67,
+                    matchWordsOnly: true
+                }
+            ]
+        });
+
+        expect(result).not.toBeNull();
+        expect(result?.selector).toBe(`#__next span[class*=PriceCard_sf-price-card__price__]`);
+    });
 
 })

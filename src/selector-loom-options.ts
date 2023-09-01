@@ -18,11 +18,14 @@ export interface IExclusionFilter {
 export interface IInclusionFilter {
     type?: MarkerType.id | MarkerType.class | MarkerType.attribute,
     /** Minimum ratio of recognizable english words in value to be considered for use. Ratio is calculated as sum of all recognizable words' lengths relative to token's size */
-    requiredWordsRatio: number,
+    requiredWordsRatio?: number,
     /** Minimum number of letters for a token to be considered a word. Defaults is 3 */
     minWordLength?: number,
     /** Defaults is 'en' */
-    languages?: string[]
+    languages?: string[],
+    
+    /** Uses only recognizable words portion of a token for a selector condition. Requires requiredWordsRatio to be set. Results in wildcard-style attribute selectors. */
+    matchWordsOnly?: boolean
 }
 
 export enum Algorithm {
@@ -57,6 +60,8 @@ export interface ISelectorLoomOptions {
      * - (exclude) "attribute "data-custom" for specific element X"
      * */
     exclusions?: IExclusionFilter | IExclusionFilter[],
+
+    sanitizeTokens?: boolean,
 
     progress?: (processed: number) => Promise<void> | void,
 

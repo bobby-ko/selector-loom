@@ -7,6 +7,7 @@ import pLimit from "p-limit";
 import NodeCache from "node-cache";
 import { dirname, join as pathJoin } from 'path';
 import { fileURLToPath } from 'url';
+
 const { WordTokenizer, WordNet, NounInflector } = natural;
 import _, { CollectionChain } from 'lodash';
 const { chain, cloneDeep, last, takeWhile, sumBy } = _;
@@ -53,6 +54,9 @@ class SubsetEvolution {
     private static readonly excludedWords = [
         "the"
     ] as readonly string[];
+
+    private static readonly wordSeparators = [' ', '\\', '-', '_', '~', ':'] as readonly string[];
+    private static readonly wordSeparatorsRegex = /[ \-_~:]+/g;
 
     private static readonly defaultLanguage = ["en"] as readonly string[];
 
@@ -316,6 +320,40 @@ class SubsetEvolution {
         return word;
     }
 
+    private async getWords(value: string, explicitInclusions: IInclusionFilter[]): Promise<string[]> {
+
+        let tokens = SubsetEvolution.tokenizer.tokenize(value.replace(/[_0-9]+/g, " "));
+
+        if (!tokens || tokens.length === 0)
+            return [];
+
+        for (const inclusion of explicitInclusions) {
+            if ((inclusion.requiredWordsRatio ?? 0) <= 0 || (inclusion.requiredWordsRatio ?? 0) > 1)
+                throw new Error("Invalid requiredWordsRatio value");
+
+            tokens = chain(tokens)
+                .filter(word =>
+                    word.length >= (inclusion.minWordLength ?? 3)
+                    && !SubsetEvolution.excludedWords.includes(word.toLowerCase()))
+                .map(SubsetEvolution.splitCamelNotation)
+                .flatten()
+                .map(word => this.splitLongWord(word))
+                .flatten()
+                .filter(word => !SubsetEvolution.excludedWords.includes(word.toLowerCase()))
+                .value();
+        }
+
+        const wordTokens: string[] = [];
+        await Promise.all(tokens
+            .map(async word => {
+                const _isWord = await this.isWord(word);
+                if (_isWord)
+                    wordTokens.push(word);
+            }));
+
+        return wordTokens;
+    }
+
     private async getWordRatio(value: string, explicitInclusions: IInclusionFilter[]): Promise<number> {
         let result = SubsetEvolution.wordRatioCache.get<number>(value);
 
@@ -329,36 +367,9 @@ class SubsetEvolution {
             if (result !== undefined)
                 return result;
 
-            let tokens = SubsetEvolution.tokenizer.tokenize(value.replace(/[_0-9]+/g, " "));
+            const wordTokens = await this.getWords(value, explicitInclusions);
 
-            if (!tokens || tokens.length === 0)
-                return 0;
-
-            for (const inclusion of explicitInclusions) {
-                if (inclusion.requiredWordsRatio <= 0 || inclusion.requiredWordsRatio > 1)
-                    throw new Error("Invalid requiredWordsRatio value");
-
-                tokens = chain(tokens)
-                    .filter(word =>
-                        word.length >= (inclusion.minWordLength ?? 3)
-                        && !SubsetEvolution.excludedWords.includes(word.toLowerCase()))
-                    .map(SubsetEvolution.splitCamelNotation)
-                    .flatten()
-                    .map(word => this.splitLongWord(word))
-                    .flatten()
-                    .filter(word => !SubsetEvolution.excludedWords.includes(word.toLowerCase()))
-                    .value();
-            }
-
-            const wordTokens: string[] = [];
-            await Promise.all(tokens
-                .map(async word => {
-                    const _isWord = await this.isWord(word);
-                    if (_isWord)
-                        wordTokens.push(word);
-                }));
-
-            result = wordTokens.reduce((accum, word) => accum + word.length, 0) / value.replace(/[ \-_~:]+/g, "").length;
+            result = wordTokens.reduce((accum, word) => accum + word.length, 0) / value.replace(SubsetEvolution.wordSeparatorsRegex, "").length;
             SubsetEvolution.wordRatioCache.set(value, result);
             return result;
         });
@@ -369,7 +380,7 @@ class SubsetEvolution {
             const wordsRatio = await this.getWordRatio(value, explicitInclusions);
 
             for (const inclusion of explicitInclusions)
-                if (wordsRatio < inclusion.requiredWordsRatio)
+                if (wordsRatio < (inclusion.requiredWordsRatio ?? 0))
                     return false;
         }
 
@@ -406,7 +417,7 @@ class SubsetEvolution {
         return false;
     }
 
-    static weighted(list: string[] | IterableIterator<string>, distribution: Record<string, number>, type: MarkerType): IWeighted[] {
+    private static weighted(list: string[] | IterableIterator<string>, distribution: Record<string, number>, type: MarkerType): IWeighted[] {
         return (
             Array.isArray(list)
                 ? list
@@ -414,10 +425,105 @@ class SubsetEvolution {
             .map(item => ({ type, item, weight: distribution[item] ?? -1 } as IWeighted));
     }
 
-    static segmentedSelector(marker: IWeighted): (string | null)[] {
+    private async getMatcherFor(token: string, explicitInclusions?: IInclusionFilter[]): Promise<{ start: number, length: number }> {
+        const matchWordsOnly = explicitInclusions?.some(filter =>
+            filter.matchWordsOnly
+            && (filter.requiredWordsRatio ?? 0) > 0
+            && (filter.type ?? MarkerType.class) === MarkerType.class);
+        const length = token.length;
+
+        if (matchWordsOnly
+            && await this.getWordRatio(token, explicitInclusions ?? []) < 1.0) {
+            const words = await this.getWords(token, explicitInclusions ?? []);
+
+            if (words.length === 0)
+                throw new Error(`Unexpected token with no recognizable words picked for selector.`);
+
+            const tokenWordMask = (new Array<boolean>(token.length)).fill(false);
+            for (var word of chain(words).uniq().orderBy(word => word.length, "desc").value()) {
+                let startIndex = 0;
+                do {
+                    const index = token.indexOf(word, startIndex);
+                    if (index >= 0) {
+                        tokenWordMask.fill(true, index, index + word.length);
+                        startIndex = index + 1;
+                    }
+                    else
+                        break;
+                }
+                while (true);
+            }
+            for (let i = 0; i < length; i++)
+                if (SubsetEvolution.wordSeparators.includes(token[i]))
+                    tokenWordMask[i] = true;
+
+            let updated = false;
+            const groups: { value: boolean, start: number; length: number }[] = [];
+            do {
+                updated = false;
+                groups.length = 0;
+
+                let currentGroup = {
+                    value: tokenWordMask[0],
+                    start: 0,
+                    length: 1
+                };
+
+                for (let i = 1; i < length; i++) {
+                    if (tokenWordMask[i] === currentGroup.value) {
+                        currentGroup.length++;
+                    } else {
+                        groups.push(currentGroup);
+                        currentGroup = {
+                            value: tokenWordMask[i],
+                            start: i,
+                            length: 1
+                        };
+                    }
+                }
+
+                groups.push(currentGroup);
+
+                // mask-up non-word segments less than 3 characters long and composed of letters - usually these are abbreviations and less likely to be generated sequences
+
+                for (const group of groups.filter(group => !group.value && group.length <= 2 && /^[a-z]+$/i.test(token.substring(group.start, group.start + group.length)))) {
+                    tokenWordMask.fill(true, group.start, group.start + group.length);
+                    updated = true;
+                }
+            }
+            while (updated);
+
+            const matchOnThis = chain(groups)
+                .filter(group => group.value)
+                .maxBy(group => group.length)
+                .value() as unknown as {
+                    start: number;
+                    length: number;
+                };
+
+            if (matchOnThis.length < length)
+                return {
+                    start: matchOnThis.start,
+                    length: matchOnThis.length
+                };
+        }
+
+        return {
+            start: 0,
+            length
+        }
+    }
+
+    private async segmentedSelector(marker: IWeighted, explicitInclusions?: IInclusionFilter[]): Promise<(string | null)[]> {
         switch (marker.type) {
             case MarkerType.class:
-                return [null, `.${marker.item}`, null];
+                const tokenMatcher = await this.getMatcherFor(marker.item, explicitInclusions);
+                
+                const classSelector = tokenMatcher.length < marker.item.length
+                    ? `[class*=${marker.item.substring(tokenMatcher.start, tokenMatcher.start + tokenMatcher.length)}]`
+                    : `.${marker.item}`;
+
+                return [null, classSelector, null];
 
             case MarkerType.attribute:
                 const pair = marker.item.split("=");
@@ -431,9 +537,9 @@ class SubsetEvolution {
         }
     }
 
-    static merge(target: (string | null)[], source: IWeighted): (string | null)[] {
+    private async merge(target: (string | null)[], source: IWeighted, explicitInclusions?: IInclusionFilter[]): Promise<(string | null)[]> {
         let i = 0;
-        for (const newSegment of SubsetEvolution.segmentedSelector(source)) {
+        for (const newSegment of await this.segmentedSelector(source, explicitInclusions)) {
             if (newSegment) {
                 const segment = target[i];
                 target[i] = (segment ?? "") + newSegment;
@@ -485,7 +591,7 @@ class SubsetEvolution {
             .value();
     }
 
-    private volume(element: HTMLElement, depthDelta: number): IElementVolume {
+    private async volume(element: HTMLElement, depthDelta: number, explicitInclusions?: IInclusionFilter[]): Promise<IElementVolume> {
         const markers = this.$markers(element)
             .orderBy(marker => marker.weight, "desc")
             .value();
@@ -494,7 +600,7 @@ class SubsetEvolution {
             depthDelta,
             element,
             markers,
-            selectorSegments: SubsetEvolution.segmentedSelector(markers[0]),
+            selectorSegments: await this.segmentedSelector(markers[0], explicitInclusions),
             usedMarkers: markers.slice(0, 1)
         }
     }
@@ -539,7 +645,17 @@ class SubsetEvolution {
         };
     }
 
-    private static anchorSelector(idElement: HTMLElement, anchorElement: HTMLElement, label: HTMLElement | undefined, strategy: Strategy) {
+    private async getIdSelector(id: string, explicitInclusions?: IInclusionFilter[]): Promise<string>
+    {
+        const idMatcher = await this.getMatcherFor(id, explicitInclusions);
+        return idMatcher.length < id.length
+            ? (idMatcher.start === 0 
+                ? `[id^=${id.substring(0, idMatcher.length)}]`
+                : `[id*=${id.substring(idMatcher.start, idMatcher.start + idMatcher.length)}]`)
+            : `#${id}`;
+    }
+
+    private async anchorSelector(idElement: HTMLElement, anchorElement: HTMLElement, label: HTMLElement | undefined, strategy: Strategy, explicitInclusions?: IInclusionFilter[]): Promise<string> {
         if (!label)
             return "";
 
@@ -556,15 +672,16 @@ class SubsetEvolution {
             label = newLabel as HTMLElement;
         }
 
-        const labelSelector = (label?.id ?? "") != ""
-            ? `#${label.id}`
+        const labelId = label?.id ?? "";
+        const labelSelector = labelId != ""
+            ? await this.getIdSelector(labelId, explicitInclusions)
             : `${label.tagName.toLowerCase()}:contains('${textContent}')`;
 
         anchorSelector = `${(neighboringParents ? anchorElement.previousElementSibling as HTMLElement : anchorElement).tagName.toLowerCase()}:has(${labelSelector}) ${(neighboringParents ? "+ " + anchorElement.tagName.toLowerCase() + " " : "")}`;
 
-        const $ = jquery(idElement.ownerDocument.defaultView as Window);
+        const $ = jquery(idElement.ownerDocument.defaultView as Window) as unknown as JQueryStatic;
 
-        if (($ as any)(`#${idElement.id} ${anchorSelector}`).length > 1) {
+        if ($(`${await this.getIdSelector(idElement.id, explicitInclusions)} ${anchorSelector}`).length > 1) {
             const anchorParent = anchorElement.parentElement;
             if (anchorParent !== idElement)
                 anchorSelector = `${anchorParent?.tagName.toLocaleLowerCase()} > ${anchorSelector}`
@@ -809,9 +926,10 @@ class SubsetEvolution {
                 se.tagDistribution[element.tagName] = (count ?? 0) + 1;
             }
 
-            let combinationSpace: IElementVolume[] = [se.volume(
+            let combinationSpace: IElementVolume[] = [await se.volume(
                 targets[0],
-                0)];
+                0,
+                userInclusions)];
 
             let lastCombinationSpace: IElementVolume[] | undefined;
             let mutationMarker: IElementMarker | undefined;
@@ -833,16 +951,17 @@ class SubsetEvolution {
 
                 if (validationResult.valid) {
 
-                    const anchorSelectorVal = SubsetEvolution.anchorSelector(
+                    const anchorSelectorVal = await se.anchorSelector(
                         idParent.element,
                         (anchorParent as IAnchor).element,
                         label !== "auto" ? label : undefined,
-                        strategy);
+                        strategy,
+                        userInclusions);
 
                     return {
                         combinationSpace,
                         selector: idParent.element.id
-                            ? `#${idParent.element.id} ${anchorSelectorVal}${(anchorParent.element === targets[0] ? " " : selectorCandidate)}`.trim()
+                            ? `${await se.getIdSelector(idParent.element.id, userInclusions)} ${anchorSelectorVal}${(anchorParent.element === targets[0] ? " " : selectorCandidate)}`.trim()
                             : selectorCandidate,
                         ...(excludedMarkers.length ? { excludedMarkers } : undefined),
                         example: {
@@ -872,91 +991,93 @@ class SubsetEvolution {
                 // 2. Add a new element to the volume from the parent chain with a top marker
                 // Pick the best fitted mutation
 
-                const mutation = chain(combinationSpace)
+                const mutation =
+                    chain(await Promise.all(combinationSpace
 
-                    // generate a set of combinationSpaces, each exploring a new mutation for an elementVolume
-                    .map(elementVolume => {
+                        // generate a set of combinationSpaces, each exploring a new mutation for an elementVolume
+                        .map(async elementVolume => {
 
-                        const newMarker = se.topMarker(
-                            elementVolume.element,
-                            elementVolume.usedMarkers,
-                            excludedMarkers,
-                            userExclusions);
+                            const newMarker = se.topMarker(
+                                elementVolume.element,
+                                elementVolume.usedMarkers,
+                                excludedMarkers,
+                                userExclusions);
 
-                        if (newMarker) {
-                            const mutatedElementVolume = {
-                                depthDelta: elementVolume.depthDelta,
-                                element: elementVolume.element,
-                                selectorSegments: SubsetEvolution.merge(cloneDeep(elementVolume.selectorSegments), newMarker),
-                                markers: elementVolume.markers,
-                                usedMarkers: elementVolume.usedMarkers.concat(newMarker)
-                            } as IElementVolume;
+                            if (newMarker) {
+                                const mutatedElementVolume = {
+                                    depthDelta: elementVolume.depthDelta,
+                                    element: elementVolume.element,
+                                    selectorSegments: await se.merge(cloneDeep(elementVolume.selectorSegments), newMarker, userInclusions),
+                                    markers: elementVolume.markers,
+                                    usedMarkers: elementVolume.usedMarkers.concat(newMarker)
+                                } as IElementVolume;
 
-                            const mutatedCombinationSpace = combinationSpace.map(eVol => eVol === elementVolume ? mutatedElementVolume : eVol);
+                                const mutatedCombinationSpace = combinationSpace.map(eVol => eVol === elementVolume ? mutatedElementVolume : eVol);
+                                const mutatedSelectorCandidate = SubsetEvolution.selector(combinationSpace);
+                                const matches = (anchorParent as IAnchor).element.querySelectorAll(mutatedSelectorCandidate);
+
+                                return {
+                                    combinationSpace: mutatedCombinationSpace,
+                                    matches,
+                                    mutationDepthDelta: elementVolume.depthDelta,
+                                    mutationMarker: {
+                                        element: elementVolume.element,
+                                        item: newMarker.item,
+                                        type: newMarker.type
+                                    }
+                                } as ICombinationSpaceMutation;
+                            }
+
+                            return null;
+                        })))
+
+                        // some elementVolumes might have exhausted all markers so there won't be any new mutations from those 
+                        .filter(mutation => mutation != null)
+
+                        .concat(await (async () => {
+                            const lastCombinationSpace = last(combinationSpace) as IElementVolume;
+                            const nextParentElement = lastCombinationSpace.element.parentElement as HTMLElement;
+                            if (nextParentElement === (anchorParent as IAnchor).element)
+                                return [];
+
+                            const depthDelta = lastCombinationSpace.depthDelta + 1;
+
+                            const newElementVolume = await se.volume(
+                                nextParentElement,
+                                depthDelta,
+                                userInclusions
+                            );
+                            const mutatedCombinationSpace = combinationSpace.concat(newElementVolume);
+
                             const mutatedSelectorCandidate = SubsetEvolution.selector(combinationSpace);
                             const matches = (anchorParent as IAnchor).element.querySelectorAll(mutatedSelectorCandidate);
 
-                            return {
+                            return [{
                                 combinationSpace: mutatedCombinationSpace,
                                 matches,
-                                mutationDepthDelta: elementVolume.depthDelta,
+                                mutationDepthDelta: depthDelta,
                                 mutationMarker: {
-                                    element: elementVolume.element,
-                                    item: newMarker.item,
-                                    type: newMarker.type
+                                    element: nextParentElement,
+                                    item: newElementVolume.usedMarkers[0].item,
+                                    type: newElementVolume.usedMarkers[0].type
                                 }
-                            } as ICombinationSpaceMutation;
-                        }
+                            } as ICombinationSpaceMutation];
+                        })())
 
-                        return null;
-                    })
+                        // Find the best fitted mutation
+                        // Ranking is a formula reversely proportionate to number of matches and proportionate to mutations closer to the target element:
+                        // - The less number of matches the better
+                        // - The closer (mutated element sub-selector's position) relative to target element the better
+                        .reduce((bestFit, mutation) =>
+                            !bestFit
+                                || ((mutation as ICombinationSpaceMutation).matches.length / (1.0 - distanceWeightReductionFactor * (mutation as ICombinationSpaceMutation).mutationDepthDelta))
+                                < ((bestFit.matches.length ?? elements.length) / (1.0 - distanceWeightReductionFactor * bestFit.mutationDepthDelta))
 
-                    // some elementVolumes might have exhausted all markers so there won't be any new mutations from those 
-                    .filter(mutation => mutation != null)
+                                ? mutation
 
-                    .concat((() => {
-                        const lastCombinationSpace = last(combinationSpace) as IElementVolume;
-                        const nextParentElement = lastCombinationSpace.element.parentElement as HTMLElement;
-                        if (nextParentElement === (anchorParent as IAnchor).element)
-                            return [];
+                                : bestFit)
 
-                        const depthDelta = lastCombinationSpace.depthDelta + 1;
-
-                        const newElementVolume = se.volume(
-                            nextParentElement,
-                            depthDelta
-                        );
-                        const mutatedCombinationSpace = combinationSpace.concat(newElementVolume);
-
-                        const mutatedSelectorCandidate = SubsetEvolution.selector(combinationSpace);
-                        const matches = (anchorParent as IAnchor).element.querySelectorAll(mutatedSelectorCandidate);
-
-                        return [{
-                            combinationSpace: mutatedCombinationSpace,
-                            matches,
-                            mutationDepthDelta: depthDelta,
-                            mutationMarker: {
-                                element: nextParentElement,
-                                item: newElementVolume.usedMarkers[0].item,
-                                type: newElementVolume.usedMarkers[0].type
-                            }
-                        } as ICombinationSpaceMutation];
-                    })())
-
-                    // Find the best fitted mutation
-                    // Ranking is a formula reversely proportionate to number of matches and proportionate to mutations closer to the target element:
-                    // - The less number of matches the better
-                    // - The closer (mutated element sub-selector's position) relative to target element the better
-                    .reduce((bestFit, mutation) =>
-                        !bestFit
-                            || ((mutation as ICombinationSpaceMutation).matches.length / (1.0 - distanceWeightReductionFactor * (mutation as ICombinationSpaceMutation).mutationDepthDelta))
-                            < ((bestFit.matches.length ?? elements.length) / (1.0 - distanceWeightReductionFactor * bestFit.mutationDepthDelta))
-
-                            ? mutation
-
-                            : bestFit)
-
-                    .value();
+                        .value();
 
                 // could not find a solution 
                 if (!mutation) {
@@ -998,13 +1119,13 @@ class SubsetEvolution {
         }
         while (retry)
 
-        return se.logs.length 
+        return se.logs.length
             ? {
                 example: {
                     document,
                     target: targets
                 },
-                logs: se.logs 
+                logs: se.logs
             }
             : null;
     }

@@ -83,8 +83,8 @@ describe("#selectorLoom", () => {
 
         for (const example of examples)
         {
-            const $ = jquery(example.document.defaultView as Window);
-            const content = ($ as any)(result?.selector)[0].textContent as string;
+            const $ = jquery(example.document.defaultView as Window) as unknown as JQueryStatic;
+            const content = $(result?.selector as string)[0].textContent as string;
             expect(content).match(/[0-9,]+/);
         };
     });
@@ -126,8 +126,8 @@ describe("#selectorLoom", () => {
 
         for (const example of examples)
         {
-            const $ = jquery(example.document.defaultView as Window);
-            const content = ($ as any)(result?.selector)[0].textContent as string;
+            const $ = jquery(example.document.defaultView as Window) as unknown as JQueryStatic;;
+            const content = $(result?.selector as string)[0].textContent as string;
             expect(content).match(/[0-9,]+/);
         };
     });      
