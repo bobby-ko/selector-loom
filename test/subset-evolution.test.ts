@@ -270,4 +270,23 @@ describe("#subsetEvolution", () => {
         expect(result?.selector).toBe(`#__next span[class*=PriceCard_sf-price-card__price__]`);
     });
 
+    it("examples-08/7961084.html (0.67, auto label)", async () => {
+        // load the examples and targets
+
+        const examples = await loadExamples("./test/data/examples-08", file => file === "7961084.html");
+        examples[0].label = "auto";
+        const result = await subsetEvolution({
+            examples,
+            inclusions: [
+                {
+                    requiredWordsRatio: 0.67,
+                    matchWordsOnly: true
+                }
+            ]
+        });
+
+        expect(result).not.toBeNull();
+        expect(result?.selector).toBeUndefined();
+    });   
+
 })

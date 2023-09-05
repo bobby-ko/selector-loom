@@ -713,15 +713,6 @@ class SubsetEvolution {
         if (label && label !== "auto" && (label.textContent?.trim() ?? "") === "")
             throw new Error(`Label needs to contain text`);
 
-        if (targets.every(target => target.id !== undefined && target.id !== null && target.id.trim() !== ""))
-            return {
-                selector: `#${targets[0].id}`,
-                example: {
-                    document,
-                    target: targets
-                }
-            };
-
         await SubsetEvolution.ensureExcluded();
 
         const languages = userInclusions?.length
@@ -796,6 +787,23 @@ class SubsetEvolution {
                 SubsetEvolution.wordSplits = {};
             }
         }
+
+        const useTargetId = 
+            (await Promise.all(targets.map(async target => 
+                target.id !== undefined 
+                && target.id !== null 
+                && target.id.trim() !== ""
+                && await se.isIncluded(target.id, userInclusions))))
+            .every(targetIsGood => targetIsGood);
+        
+        if (useTargetId)
+            return {
+                selector: `#${targets[0].id}`,
+                example: {
+                    document,
+                    target: targets
+                }
+            };
 
         const allAnchors = await Promise.all(targets
             .concat(label && label !== "auto" ? [label] : [])
