@@ -2,7 +2,7 @@
     "name": "selector-loom",
     "author": "Bobby Kotzev",
     "license": "ISC",
-    "version": "0.2.2",
+    "version": "0.2.3",
     "description": "Better CSS selector generator for modern websites",
     "keywords": [
         "css",

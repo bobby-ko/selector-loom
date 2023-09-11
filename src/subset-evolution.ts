@@ -527,7 +527,12 @@ class SubsetEvolution {
 
             case MarkerType.attribute:
                 const pair = marker.item.split("=");
-                return [null, null, `[${pair[0]}='${pair[1]}']`];
+                return [
+                    null, 
+                    null, 
+                    pair[1] && pair[1] !== "" 
+                        ? `[${pair[0]}='${pair[1]}']` 
+                        : `[${pair[0]}]`];
 
             case MarkerType.tag:
                 return [marker.item.toLowerCase(), null, null];
